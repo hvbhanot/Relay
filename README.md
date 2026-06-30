@@ -137,8 +137,32 @@ The full set of capability keys you can map: `general`, `reasoning`, `coding`,
 `math`, `current_info`, `sources`, `high_stakes`, `large_context`, `creative`,
 `vision`.
 
-**Option A — browser UI (easiest).** Open Setup → OpenRouter → **Cloud model
-pool** and set the model slug for each capability. Saved to `relay.ui.json`.
+**Option A — browser UI (easiest).** Add models and assign their roles directly
+in the Setup panel:
+
+1. Open the **Setup** panel in the browser UI.
+2. Set **Cloud provider** to `openrouter`.
+3. Set the **Default model** (the fallback used by any capability you don't map),
+   e.g. `anthropic/claude-sonnet-4.6`.
+4. Expand **Cloud model pool**. This is the *role → model* map: each key is a
+   capability (the model's "role"), each value is an OpenRouter model slug.
+   Add one line per model you want to specialize:
+
+   ```json
+   {
+     "coding":    "anthropic/claude-opus-4.8",
+     "reasoning": "anthropic/claude-opus-4.8",
+     "current_info": "openai/gpt-5.5",
+     "vision":    "google/gemini-2.5-pro"
+   }
+   ```
+
+5. Click **Save settings** (the pill shows **saved**). Settings persist to
+   `relay.ui.json`.
+
+Anything you leave out of the map uses the **Default model**. To remove a model's
+role, delete its line and save. Use any slug from
+[openrouter.ai/models](https://openrouter.ai/models).
 
 **Option B — env var.** `RELAY_CLOUD_MODEL_MAP` is a JSON object of
 `capability -> model-slug`, merged *over* the defaults (so you only list what you
