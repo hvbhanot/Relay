@@ -122,6 +122,48 @@ everything else (default)               -> anthropic/claude-sonnet-4.6
 Customize the map in the browser UI (OpenRouter → "Cloud model pool") or via the
 `RELAY_CLOUD_MODEL_MAP` env var.
 
+### Adding more cloud models
+
+A subtask can declare several capabilities. The pool picks the model for the
+**highest-priority** capability that has an entry in the map; if none match, it
+uses the default (`OPENROUTER_MODEL`). The priority order is:
+
+```text
+high_stakes > reasoning > math > coding > large_context >
+sources > current_info > vision > creative > general
+```
+
+The full set of capability keys you can map: `general`, `reasoning`, `coding`,
+`math`, `current_info`, `sources`, `high_stakes`, `large_context`, `creative`,
+`vision`.
+
+**Option A — browser UI (easiest).** Open Setup → OpenRouter → **Cloud model
+pool** and set the model slug for each capability. Saved to `relay.ui.json`.
+
+**Option B — env var.** `RELAY_CLOUD_MODEL_MAP` is a JSON object of
+`capability -> model-slug`, merged *over* the defaults (so you only list what you
+want to change). Use any model slug from [openrouter.ai/models](https://openrouter.ai/models):
+
+```bash
+export RELAY_CLOUD_PROVIDER=openrouter
+export RELAY_CLOUD_MODEL_MAP='{
+  "coding":   "anthropic/claude-opus-4.8",
+  "creative": "openai/gpt-5.5",
+  "vision":   "google/gemini-2.5-pro",
+  "reasoning":"deepseek/deepseek-r1"
+}'
+# Default for any unmapped capability:
+export OPENROUTER_MODEL=anthropic/claude-sonnet-4.6
+```
+
+Notes:
+
+- Invalid JSON or non-string entries are ignored, so a typo never wipes the pool —
+  it just falls back to the defaults.
+- The capability map only applies when `RELAY_CLOUD_PROVIDER=openrouter`. Other
+  providers use the single `OPENROUTER_MODEL` / default slug.
+- To pin one model for *everything*, leave the map empty and set `OPENROUTER_MODEL`.
+
 ## Project layout
 
 ```text
