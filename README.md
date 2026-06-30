@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/relay-logo.svg" alt="Relay" width="360">
+  <img src="assets/relay-logo.png" alt="Relay" width="520">
 </p>
 
 <p align="center">
