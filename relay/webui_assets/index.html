@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay</title>
+    <link rel="icon" href="/assets/logo-icon.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <a class="brand" href="#" aria-label="Relay home">
+          <img class="brand-icon" src="/assets/logo-icon.png" alt="" width="34" height="34" />
+          <span class="brand-name">Relay</span>
+        </a>
+
+        <div id="headerStatus" class="header-status" aria-label="Routing status"></div>
+
+        <div class="header-tools" aria-label="Tools">
+          <button class="tool-btn" data-view="trace" type="button" title="Routing trace" aria-label="Routing trace">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 8h14v-2H7v2zm0-4h14v-2H7v2zm0-6v2h14V7H7z"/></svg>
+          </button>
+          <button class="tool-btn" data-view="history" type="button" title="Chat history" aria-label="Chat history">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+          </button>
+          <button class="tool-btn" data-view="settings" type="button" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96a7.02 7.02 0 0 0-1.63-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.488.488 0 0 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 15.6 12 3.6 3.6 0 0 1 12 15.6z"/></svg>
+          </button>
+          <button id="newChat" class="tool-btn tool-btn-text" type="button">New chat</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section id="chatLog" class="chat" aria-live="polite">
+          <div id="chatInner" class="chat-inner"></div>
+        </section>
+        <div id="planPreview" class="plan-preview" hidden></div>
+
+        <form id="chatForm" class="composer">
+          <div class="composer-shell">
+            <div id="attachmentTray" class="attachment-tray" hidden></div>
+            <div class="composer-box">
+              <input
+                id="fileInput"
+                type="file"
+                multiple
+                hidden
+                accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.py,.js,.ts,.json,.yaml,.yml,.csv,.html,.css,.sql,.sh,.rs,.go,.java,.c,.cpp,.rb,.php,.swift,.kt,.xml,.log"
+              />
+              <button id="attachButton" class="attach" type="button" title="Attach files" aria-label="Attach files">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.5 6v11.5a4 4 0 1 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 1 1-2 0V6h-1.5v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 1 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6z"/></svg>
+              </button>
+              <textarea id="messageInput" rows="1" placeholder="Ask Relay anything…"></textarea>
+              <button id="sendButton" class="send" type="submit" title="Send" aria-label="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a1 1 0 0 0-1.39 1.2L4 11l8 1-8 1-1.99 6.2a1 1 0 0 0 1.39 1.2z"/></svg>
+              </button>
+            </div>
+            <p class="composer-hint">Attach images or text files · Enter to send · Shift+Enter for newline <span id="composerHint"></span></p>
+          </div>
+        </form>
+      </main>
+
+      <div id="scrim" class="scrim"></div>
+
+      <aside id="drawer-settings" class="drawer" aria-label="Settings">
+        <div class="drawer-head">
+          <div>
+            <h2>Settings</h2>
+            <p class="drawer-sub">Models, cloud fallback, routing policy</p>
+          </div>
+          <span id="saveState" class="pill">saved</span>
+          <button class="drawer-close" type="button" data-close aria-label="Close">✕</button>
+        </div>
+        <div class="drawer-body">
+          <div class="group">
+            <div class="group-title">Local model</div>
+            <label>
+              <span>Provider</span>
+              <select id="local_provider">
+                <option value="ollama">Ollama</option>
+                <option value="lmstudio">LM Studio</option>
+                <option value="llamacpp">llama.cpp server</option>
+                <option value="vllm">vLLM</option>
+              </select>
+            </label>
+            <label>
+              <span id="local_base_url_label">Base URL</span>
+              <input id="ollama_base_url" placeholder="http://localhost:11434" />
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="ollama_model" list="ollamaModels" placeholder="llama3.1:8b" />
+              <datalist id="ollamaModels"></datalist>
+            </label>
+            <div class="row">
+              <button id="refreshModels" class="ghost" type="button">List models</button>
+              <button id="testLocal" class="ghost" type="button">Ping local</button>
+            </div>
+            <p id="secretsInfo" class="hint"></p>
+            <p class="hint">OpenAI-compatible clients can use <code>POST /v1/chat/completions</code> on this server. Headless CLI: <code>relay ask "…"</code></p>
+          </div>
+
+          <div class="group">
+            <div class="group-title with-switch">
+              <span>Cloud fallback</span>
+              <label class="switch" title="Enable cloud fallback">
+                <input id="cloud_enabled" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <label>
+              <span>Provider</span>
+              <select id="cloud_provider">
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai-compatible">OpenAI-compatible</option>
+              </select>
+            </label>
+
+            <div class="provider-block" data-provider="openrouter">
+              <label>
+                <span>OpenRouter base URL</span>
+                <input id="openrouter_base_url" placeholder="https://openrouter.ai/api/v1" />
+              </label>
+              <label>
+                <span>Default model</span>
+                <input id="openrouter_model" placeholder="anthropic/claude-sonnet-4.6" />
+              </label>
+              <label>
+                <span>API key</span>
+                <input id="openrouter_api_key" type="password" autocomplete="off" placeholder="Paste key or leave blank" />
+              </label>
+              <label class="check">
+                <input id="openrouter_api_key_clear" type="checkbox" />
+                Clear saved key
+              </label>
+              <details>
+                <summary>App headers</summary>
+                <label>
+                  <span>Site URL</span>
+                  <input id="openrouter_site_url" />
+                </label>
+                <label>
+                  <span>App name</span>
+                  <input id="openrouter_app_name" />
+                </label>
+              </details>
+              <details>
+                <summary>Cloud model pool</summary>
+                <p class="hint">
+                  Capability → model map. Unmapped subtasks use the default model above.
+                </p>
+                <label>
+                  <span>JSON map</span>
+                  <textarea id="cloud_model_map" rows="9" spellcheck="false"
+                    placeholder='{"reasoning": "anthropic/claude-opus-4.8"}'></textarea>
+                </label>
+              </details>
+            </div>
+
+            <div class="provider-block" data-provider="openai-compatible" hidden>
+              <label>
+                <span>Base URL</span>
+                <input id="openai_compat_base_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label>
+                <span>Model</span>
+                <input id="openai_compat_model" placeholder="gpt-5.5" />
+              </label>
+              <label>
+                <span>API key</span>
+                <input id="openai_compat_api_key" type="password" autocomplete="off" placeholder="Paste key or leave blank" />
+              </label>
+              <label class="check">
+                <input id="openai_compat_api_key_clear" type="checkbox" />
+                Clear saved key
+              </label>
+            </div>
+
+            <button id="testCloud" class="ghost wide" type="button">Ping cloud</button>
+          </div>
+
+          <div class="group">
+            <div class="group-title">Chat</div>
+            <label class="check">
+              <input id="planner_preview_enabled" type="checkbox" />
+              Review plan before running
+            </label>
+          </div>
+
+          <div class="group">
+            <div class="group-title">Routing</div>
+            <label>
+              <span>Privacy mode</span>
+              <select id="privacy_mode">
+                <option value="balanced">Balanced</option>
+                <option value="strict">Strict local</option>
+                <option value="permissive">Permissive cloud</option>
+              </select>
+            </label>
+            <p id="privacyModeHelp" class="hint routing-help"></p>
+            <details class="routing-details">
+              <summary>What routing settings mean</summary>
+              <dl class="routing-glossary">
+                <dt>Privacy mode</dt>
+                <dd>Controls when sensitive subtasks must stay on your local model instead of cloud.</dd>
+                <dt>Balanced</dt>
+                <dd>High-sensitivity tasks and prompts mentioning secrets stay local. Difficult work still routes to cloud when enabled.</dd>
+                <dt>Strict local</dt>
+                <dd>Also keeps medium-sensitivity subtasks local. Use when you want tighter data control.</dd>
+                <dt>Permissive cloud</dt>
+                <dd>Does not force local for sensitivity alone — only explicit secret keywords still stay local.</dd>
+                <dt>Confidence</dt>
+                <dd>For simple local tasks only: if the local answer scores below this (0–1), Relay retries on cloud.</dd>
+                <dt>Subtasks</dt>
+                <dd>Max subtasks per request. Independent subtasks run in parallel up to this limit.</dd>
+                <dt>Auto routing</dt>
+                <dd>Relay picks local vs cloud from capabilities. Difficult work (coding, math, proofs) never runs locally when cloud is on.</dd>
+              </dl>
+            </details>
+            <div class="split">
+              <label>
+                <span>Confidence</span>
+                <input id="min_local_confidence" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                <span>Subtasks</span>
+                <input id="max_subtasks" type="number" min="1" max="24" step="1" />
+              </label>
+            </div>
+            <label>
+              <span>Timeout (seconds)</span>
+              <input id="request_timeout_seconds" type="number" min="1" max="600" step="1" />
+            </label>
+          </div>
+
+          <button id="saveSetup" class="primary wide" type="button">Save settings</button>
+          <p id="configPath" class="path"></p>
+        </div>
+      </aside>
+
+      <aside id="drawer-trace" class="drawer" aria-label="Trace">
+        <div class="drawer-head">
+          <div>
+            <h2>Routing trace</h2>
+            <p class="drawer-sub">How your request was planned and routed</p>
+          </div>
+          <span id="traceState" class="pill">idle</span>
+          <button class="drawer-close" type="button" data-close aria-label="Close">✕</button>
+        </div>
+        <div class="drawer-body">
+          <p id="traceSummary" class="empty">No run yet. Send a message to see planning, routes, and errors.</p>
+          <div id="traceUsage" class="trace-usage" hidden></div>
+          <div id="routeList" class="routes"></div>
+          <details class="json-box">
+            <summary>Raw JSON</summary>
+            <pre id="traceJson">{}</pre>
+          </details>
+        </div>
+      </aside>
+
+      <aside id="drawer-history" class="drawer" aria-label="History">
+        <div class="drawer-head">
+          <div>
+            <h2>Chat history</h2>
+            <p class="drawer-sub">Past conversations saved on this machine</p>
+          </div>
+          <button id="historyNew" class="ghost" type="button">New</button>
+          <button class="drawer-close" type="button" data-close aria-label="Close">✕</button>
+        </div>
+        <div class="drawer-body">
+          <div id="historyList" class="history-list"></div>
+          <p id="historyPath" class="path"></p>
+        </div>
+      </aside>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

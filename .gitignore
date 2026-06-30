@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Environment
+.env
+relay.ui.json
+relay.history.json
+modelrouter.ui.json
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

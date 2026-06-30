@@ -1,0 +1,28 @@
+[project]
+name = "relay"
+version = "0.1.0"
+description = "Relay — local-first model router with optional cloud fallback"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+relay = "relay.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["relay*"]
+
+[tool.setuptools.package-data]
+relay = ["webui_assets/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
