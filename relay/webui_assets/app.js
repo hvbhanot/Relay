@@ -798,17 +798,6 @@ async function startNewChat() {
   await beginFreshChat({ deactivate: true });
 }
 
-async function restoreActiveSession() {
-  const data = await api("/api/history");
-  const activeId = data.active_session_id;
-  if (!activeId) return false;
-  const sessionData = await api(`/api/history/${activeId}`);
-  currentSessionId = activeId;
-  renderSession(sessionData.session);
-  await loadHistoryList().catch(() => {});
-  return true;
-}
-
 function hidePlanPreview() {
   clearTimeout(showPlanCancelled._timer);
   const panel = $("planPreview");
@@ -1687,12 +1676,9 @@ async function bootstrap() {
   wireEvents();
   resizeComposer();
   await loadConfig().catch((err) => toast(err.message, "error"));
-  try {
-    if (await restoreActiveSession()) return;
-  } catch {
-    // History API unavailable — fall back to a blank chat surface.
-  }
-  await beginFreshChat({ deactivate: false });
+  // Always open the main chat surface on load. Past conversations stay in the
+  // History drawer; clearing the active pointer keeps them out of the way.
+  await beginFreshChat({ deactivate: true });
 }
 
 bootstrap();
