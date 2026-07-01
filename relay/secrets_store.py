@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-_SECRET_KEYS = ("openrouter_api_key", "openai_compat_api_key")
+_SECRET_KEYS = ("openrouter_api_key", "openai_compat_api_key", "ollama_api_key")
 _PLACEHOLDER_API_KEYS = frozenset({"sk-live", "sk-test", "sk-secret"})
 _MIN_USABLE_KEY_LEN = 20
 _KEYCHAIN_SERVICE = "relay"
@@ -195,4 +195,6 @@ def secrets_public_metadata() -> dict[str, Any]:
         "openrouter_api_key_usable": api_key_looks_usable(openrouter_key),
         "has_openai_compat_api_key": bool(openai_compat_key),
         "openai_compat_api_key_usable": api_key_looks_usable(openai_compat_key),
+        # Ollama keys have no sk- shape, so no "usable" heuristic applies.
+        "has_ollama_api_key": bool(secrets.get("ollama_api_key")),
     }

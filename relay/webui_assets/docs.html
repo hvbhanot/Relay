@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay Docs</title>
+    <link rel="icon" href="/assets/logo-icon.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400..700&family=Archivo:wght@400..700&family=Spline+Sans+Mono:wght@400..600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body class="docs-page">
+    <div class="docs-shell">
+      <header class="docs-header">
+        <a class="brand" href="/" aria-label="Relay home">
+          <span class="brand-coin"><img src="/assets/logo-icon.png" alt="" width="34" height="34" /></span>
+          <span class="brand-word">
+            <span class="brand-name">Re<em>lay</em> Docs</span>
+            <span class="brand-tag">Local &amp; Cloud</span>
+          </span>
+        </a>
+        <a class="docs-back" href="/">← Back to app</a>
+      </header>
+
+      <div class="docs-grid">
+        <nav class="docs-toc" aria-label="Contents">
+          <span class="docs-toc-label">Contents</span>
+          <a href="#flow">How Relay works</a>
+          <a href="#interface">The interface</a>
+          <a href="#local-models">Local models</a>
+          <a href="#cloud-models">Cloud models &amp; the pool</a>
+          <a href="#routing">Routing controls</a>
+          <a href="#web-search">Web search</a>
+          <a href="#answers">Answers &amp; feedback</a>
+          <a href="#attachments">Attachments</a>
+          <a href="#trace">The routing trace</a>
+          <a href="#data">Your data</a>
+          <a href="#api">API &amp; CLI</a>
+          <a href="#env">Environment variables</a>
+        </nav>
+
+        <article class="docs-content">
+          <h1>Using Relay</h1>
+          <p class="docs-lede">
+            Relay is a local-first model router: it plans on your machine, runs each subtask on your
+            local model or a cloud specialist, and synthesizes one answer. This page covers everything
+            you can configure and do from the UI.
+          </p>
+
+          <h2 id="flow">How Relay works</h2>
+          <p>Every request goes through four phases:</p>
+          <ol>
+            <li><strong>Plan</strong> — your local model breaks the request into subtasks, each tagged with capabilities (coding, reasoning, current_info, …).</li>
+            <li><strong>Route</strong> — policy decides <span class="docs-pill local">local</span> or <span class="docs-pill cloud">cloud</span> per subtask, and which cloud model fits its capabilities.</li>
+            <li><strong>Execute</strong> — independent subtasks run in parallel; dependent ones wait for their inputs.</li>
+            <li><strong>Synthesize</strong> — the local model assembles one final answer from all results.</li>
+          </ol>
+          <h3>The plan preview</h3>
+          <p>
+            With <em>Review plan before running</em> enabled (Settings → Chat), Relay shows the plan before
+            executing. You can edit each subtask's title and prompt, <strong>remove</strong> subtasks,
+            <strong>add</strong> new ones, and pick a specific <strong>model per subtask</strong> from the
+            dropdown (Auto uses the predicted model). <em>Refresh routes</em> re-predicts routing after your
+            edits; <em>Run plan</em> executes. Disable the preview to send requests straight through.</p>
+
+          <h2 id="interface">The interface</h2>
+          <h3>Sidebar</h3>
+          <ul>
+            <li><strong>Chats</strong> — every conversation, newest first; the active one is highlighted. <strong>New chat</strong> starts fresh.</li>
+            <li><strong>Search chats</strong> — the box under "Chats" filters the list by title as you type.</li>
+            <li><strong>Rename a chat</strong> — hover a chat and click the pencil; Enter saves, Escape cancels.</li>
+            <li><strong>Delete a chat</strong> — hover a chat and click the <code>×</code>, then click <em>sure?</em> to confirm. Deletion is permanent (it removes the chat from <code>relay.history.json</code>); deleting the open chat returns you to a fresh one.</li>
+            <li><strong>Export</strong> — downloads the current chat as a Markdown file.</li>
+            <li><strong>Status rows</strong> — <span class="docs-pill local">orange</span> dot: your local model; <span class="docs-pill cloud">blue</span> dot: how many distinct cloud models are reachable (or "cloud off"); <span class="docs-pill good">green</span> dot: the active privacy mode.</li>
+            <li><strong>Collapse</strong> — the chevron next to the brand shrinks the sidebar to an icon rail; your choice is remembered.</li>
+          </ul>
+          <h3>Composer controls</h3>
+          <ul>
+            <li><strong>Web pill</strong> — toggles web search for current-info subtasks (green when on). Same setting as Settings → Web search.</li>
+            <li><strong>Route pill</strong> — Auto / Local / Cloud, color-coded: <strong>Auto is white</strong>, <strong>Local is orange</strong>, <strong>Cloud is blue</strong>. The filled pill is the active mode; it applies to every request until you change it.</li>
+            <li><strong>Send / Stop</strong> — while a request runs, Send becomes a red Stop square; whatever already streamed in is kept and saved.</li>
+          </ul>
+          <h3>Landing screen</h3>
+          <p>
+            The status chips under the headline are live: current local model, cloud pool size,
+            web search state, and privacy mode. They update whenever you save Settings. The example
+            cards are tagged with the route they'll likely take.
+          </p>
+
+          <h2 id="local-models">Local models</h2>
+          <p>Settings → Local model. Relay talks to any of four local runtimes:</p>
+          <table class="docs-table">
+            <tr><th>Provider</th><th>Default base URL</th><th>Notes</th></tr>
+            <tr><td>Ollama</td><td><code>http://localhost:11434</code></td><td>Native API; model list and vision detection supported</td></tr>
+            <tr><td>LM Studio</td><td><code>http://localhost:1234/v1</code></td><td>OpenAI-compatible server</td></tr>
+            <tr><td>llama.cpp server</td><td><code>http://localhost:8080/v1</code></td><td>OpenAI-compatible server</td></tr>
+            <tr><td>vLLM</td><td><code>http://localhost:8000/v1</code></td><td>OpenAI-compatible server</td></tr>
+          </table>
+          <h3>Changing the local model</h3>
+          <ol>
+            <li>Pull or load the model in your runtime, e.g. <code>ollama pull qwen2.5:14b</code>.</li>
+            <li>Click <strong>List models</strong> to fetch what the runtime has, pick one in the Model field (or type its name).</li>
+            <li><strong>Ping local</strong> to confirm it responds, then <strong>Save settings</strong>.</li>
+          </ol>
+          <div class="docs-note">
+            The local model does triple duty: planner, worker for local subtasks, and synthesizer.
+            A stronger local model improves every answer, even when the heavy lifting happens in the cloud.
+          </div>
+          <p>
+            For image attachments you need a vision-capable local model (e.g. <code>ollama pull llava</code>,
+            <code>qwen2.5-vl</code>, <code>llama3.2-vision</code>) — or cloud enabled with a valid key.
+          </p>
+          <div class="docs-note warn">
+            Ollama models tagged <code>-cloud</code> (e.g. <code>gpt-oss:120b-cloud</code>) are
+            <strong>Ollama Cloud</strong> models: they go through your local Ollama but execute on
+            ollama.com's servers. The trace still labels them <span class="docs-pill local">local</span>
+            because they use your local runtime, but the answer badge will say
+            <em>"Via Ollama Cloud"</em> instead of <em>"never left your machine"</em>. For fully
+            on-device runs, pick a model without the <code>-cloud</code> tag.
+          </div>
+          <p>
+            Relay checks for this automatically: typing or saving a <code>-cloud</code> model in
+            Settings shows an amber warning under the Model field, the save confirmation repeats the
+            heads-up, and the model chips in the sidebar and landing screen explain it in their tooltip.
+            It's a warning, not a block — Ollama Cloud models are a legitimate way to run big models
+            without local VRAM; Relay just won't label them as private.
+          </p>
+
+          <h2 id="cloud-models">Cloud models &amp; the pool</h2>
+          <p>
+            Flip on <strong>Cloud fallback</strong> (Settings) and pick a provider. With
+            <strong>OpenRouter</strong>, one API key (<code>sk-or-v1-…</code> from
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>)
+            unlocks many models, and Relay routes each cloud subtask to a different model based on its
+            capabilities. With <strong>OpenAI-compatible</strong>, all cloud subtasks use the single
+            configured model.
+          </p>
+          <h3>The capability → model map</h3>
+          <p>
+            Settings → Cloud fallback → <em>Cloud model pool</em> holds a JSON object mapping capabilities
+            to OpenRouter model slugs. A subtask may declare several capabilities; the
+            <strong>highest-priority</strong> one that has an entry wins. Anything unmapped uses the
+            <em>Default model</em>. Priority order:
+          </p>
+          <pre><code>high_stakes → reasoning → math → coding → large_context
+→ sources → current_info → vision → creative → general</code></pre>
+          <p>Example — specialize three models and let everything else use the default:</p>
+          <pre><code>{
+  "coding":       "anthropic/claude-opus-4.8",
+  "reasoning":    "anthropic/claude-opus-4.8",
+  "current_info": "openai/gpt-5.5",
+  "vision":       "google/gemini-2.5-pro"
+}</code></pre>
+          <p>
+            Use any slug from <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>.
+            To remove a model's role, delete its line and save. An empty map <code>{}</code> pins every
+            cloud subtask to the default model. Invalid JSON is rejected safely — it never wipes your pool.
+          </p>
+          <div class="docs-note">
+            The sidebar status line shows how many distinct cloud models are reachable
+            (e.g. <code>3 cloud</code>) — that's the pool plus the default, de-duplicated.
+          </div>
+
+          <h2 id="routing">Routing controls</h2>
+          <h3>The Route pill (Auto / Local / Cloud)</h3>
+          <p>Above the message box. It applies per request and is remembered:</p>
+          <ul>
+            <li><strong>Auto</strong> — policy decides per subtask from its capabilities.</li>
+            <li><strong>Local</strong> — every subtask runs on the local model. No evaluator, no cloud escalation.</li>
+            <li><strong>Cloud</strong> — every subtask prefers cloud. Privacy rules still win, and if cloud is disabled it degrades to local with a note in the trace.</li>
+          </ul>
+          <h3>Privacy mode</h3>
+          <table class="docs-table">
+            <tr><th>Mode</th><th>Effect</th></tr>
+            <tr><td>Balanced (default)</td><td>High-sensitivity subtasks and prompts mentioning secrets stay local.</td></tr>
+            <tr><td>Strict local</td><td>Medium-sensitivity subtasks stay local too.</td></tr>
+            <tr><td>Permissive cloud</td><td>Only explicit secret keywords force local.</td></tr>
+          </table>
+          <h3>Thresholds</h3>
+          <ul>
+            <li><strong>Confidence</strong> (0–1) — for simple local subtasks, a local evaluator scores the answer; below this threshold Relay retries on cloud. Your 👍/👎 feedback shifts this automatically (see below).</li>
+            <li><strong>Max subtasks</strong> — the cap per request; independent subtasks run in parallel up to this limit.</li>
+            <li><strong>Timeout</strong> — per model call, in seconds.</li>
+          </ul>
+          <div class="docs-note warn">
+            Difficult work (coding, math, proofs, architecture) never runs locally while cloud is on —
+            unless you force <strong>Local</strong> with the Route pill.
+          </div>
+
+          <h2 id="web-search">Web search</h2>
+          <p>
+            The <strong>Web</strong> pill next to the composer (or Settings → Web search) enables
+            Ollama's hosted search API. When on, a subtask gets fresh results injected into the model
+            prompt before it answers if it is tagged <code>current_info</code> or <code>sources</code>,
+            <em>or</em> if its text mentions current-info keywords (latest, today, news, pricing, …).
+            This works on every route — Auto, Local, and Cloud — so even a local model can answer
+            questions about current events. The trace reason shows
+            <em>"Web search: N result(s)"</em> when a search ran. The top hit is also fetched in full
+            (via Ollama's <code>web_fetch</code>) so the model sees the actual page, not just snippets.
+          </p>
+          <ol>
+            <li>Create a free key at <a href="https://ollama.com/settings/keys" target="_blank" rel="noopener">ollama.com/settings/keys</a>.</li>
+            <li>Paste it in Settings → Web search and save, then click <strong>Test search</strong>.</li>
+            <li>Toggle the Web pill on. Source links appear per subtask in the routing trace.</li>
+          </ol>
+          <p>A failed or missing search never blocks a request — the subtask just runs without fresh context.</p>
+
+          <h2 id="answers">Answers &amp; feedback</h2>
+          <p>Every finished answer carries a privacy badge with one of three states:</p>
+          <ul>
+            <li><span class="docs-pill good">Local only — never left your machine</span> — every model call ran on this machine.</li>
+            <li><strong>Amber "Via Ollama Cloud — ran on ollama.com"</strong> — the route stayed local, but the local model has the <code>-cloud</code> tag and executed on Ollama's servers.</li>
+            <li><strong>Blue "N of M subtasks via cloud"</strong> — some subtasks went to cloud models through your cloud provider.</li>
+          </ul>
+          <ul>
+            <li><strong>👍 / 👎</strong> — feedback tunes routing: a downvote on a fully-local answer raises the confidence threshold (escalate to cloud sooner, +0.03); an upvote lowers it (trust local more, −0.02), capped at ±0.15. Votes on cloud-routed answers are logged but don't shift the threshold.</li>
+            <li><strong>↻ Regenerate</strong> — re-runs the latest user message and replaces the latest answer (older answers can't be regenerated in place).</li>
+            <li><strong>Edit and resend</strong> — hover one of your messages and click the pencil to load its text back into the composer; sending creates a new exchange.</li>
+            <li><strong>Stop</strong> — while a request runs, the send button becomes a red stop square. Whatever already streamed in is kept and saved.</li>
+            <li><strong>Copy</strong> — every code block has a Copy button with syntax-highlighted code; <em>Copy answer</em> grabs the whole response.</li>
+          </ul>
+          <h3>Secret redaction before cloud</h3>
+          <p>
+            With <em>Redact secrets before cloud</em> on (Settings → Routing, default on), Relay masks
+            API keys, emails, SSNs, card numbers, private-key blocks, and <code>password=…</code> values
+            with placeholders like <code>[REDACTED_API_KEY_1]</code> before the prompt leaves for a cloud
+            model, then restores the originals in the answer locally. Local calls are never redacted.
+            The trace reason shows <em>"Redacted N secrets before cloud"</em> when it fired.
+          </p>
+
+          <h2 id="attachments">Attachments</h2>
+          <p>
+            The paperclip accepts up to <strong>8 files, 5&nbsp;MB each</strong>: images
+            (PNG, JPEG, GIF, WebP) and text/code files (<code>.py</code>, <code>.md</code>, <code>.csv</code>,
+            <code>.json</code>, …). Text files are inlined into planning and the relevant subtasks. Images
+            require a vision model — local (e.g. <code>llava</code>) or a cloud vision model from the pool.
+            Attachments are saved with chat history (image previews up to ~400&nbsp;KB; larger images keep
+            a name-only chip), so they reappear when you reopen a chat.
+          </p>
+
+          <h2 id="trace">The routing trace</h2>
+          <p>
+            Sidebar → <strong>Trace</strong>. For the latest run you get: each subtask's route and model,
+            the <em>why</em> (the policy reason), duration, token usage and estimated cost, any errors,
+            web-search source links, and the raw JSON of the whole trace. Failed subtasks get a
+            <strong>Retry subtask</strong> button that re-runs just that subtask as a new exchange.
+            Traces are saved with chat history, so reopening an old chat restores its last trace.
+          </p>
+
+          <h2 id="data">Your data</h2>
+          <table class="docs-table">
+            <tr><th>File</th><th>Contents</th></tr>
+            <tr><td><code>relay.ui.json</code></td><td>UI settings (models, routing, toggles). Never contains API keys.</td></tr>
+            <tr><td><code>relay.history.json</code></td><td>Chat history and traces, on this machine only.</td></tr>
+            <tr><td><code>relay.feedback.json</code></td><td>Your 👍/👎 votes and the resulting threshold bias.</td></tr>
+            <tr><td><code>~/.relay/secrets.enc</code></td><td>All API keys, encrypted at rest. Inline keys found in older config files are migrated here automatically.</td></tr>
+          </table>
+
+          <h2 id="api">API &amp; CLI</h2>
+          <p>The UI server doubles as an OpenAI-compatible endpoint, so any OpenAI client can use Relay's full plan-route-synthesize pipeline:</p>
+          <pre><code>curl http://127.0.0.1:8090/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{"model": "relay", "stream": true,
+       "messages": [{"role": "user", "content": "hello"}]}'</code></pre>
+          <p>
+            The <code>model</code> parameter can pin the route for the whole request:
+            <code>relay:local</code> forces local, <code>relay:cloud</code> prefers cloud, plain
+            <code>relay</code> uses auto routing. All three appear in <code>GET /v1/models</code>.
+          </p>
+          <p>Headless CLI from the project folder:</p>
+          <pre><code>relay ask "Summarize this repo"        # run a prompt
+relay ask --stream "…"                # stream tokens
+relay ask --json "…"                  # full trace as JSON
+relay plan "…"                        # preview the plan without running</code></pre>
+
+          <h2 id="env">Environment variables</h2>
+          <p>Everything below is optional — the UI writes the same settings to <code>relay.ui.json</code>, and UI values win over the environment.</p>
+          <table class="docs-table">
+            <tr><th>Variable</th><th>Meaning</th></tr>
+            <tr><td><code>RELAY_LOCAL_PROVIDER</code></td><td>ollama · lmstudio · llamacpp · vllm</td></tr>
+            <tr><td><code>LOCAL_BASE_URL</code> / <code>LOCAL_MODEL</code></td><td>Local runtime URL and model</td></tr>
+            <tr><td><code>RELAY_ENABLE_CLOUD</code></td><td>1 to enable cloud fallback</td></tr>
+            <tr><td><code>RELAY_CLOUD_PROVIDER</code></td><td>openrouter · openai-compatible</td></tr>
+            <tr><td><code>OPENROUTER_API_KEY</code> / <code>OPENROUTER_MODEL</code></td><td>OpenRouter key and default model</td></tr>
+            <tr><td><code>RELAY_CLOUD_MODEL_MAP</code></td><td>JSON capability → model map, merged over defaults</td></tr>
+            <tr><td><code>RELAY_PRIVACY_MODE</code></td><td>strict · balanced · permissive</td></tr>
+            <tr><td><code>RELAY_MIN_LOCAL_CONFIDENCE</code></td><td>Escalation threshold, 0–1</td></tr>
+            <tr><td><code>RELAY_MAX_SUBTASKS</code></td><td>Subtask cap per request</td></tr>
+            <tr><td><code>RELAY_ENABLE_WEB_SEARCH</code> / <code>OLLAMA_API_KEY</code></td><td>Web search toggle and ollama.com key</td></tr>
+            <tr><td><code>RELAY_REDACT_CLOUD</code></td><td>Mask secrets before cloud calls (default 1)</td></tr>
+            <tr><td><code>RELAY_TIMEOUT</code></td><td>Per-call timeout in seconds</td></tr>
+          </table>
+        </article>
+      </div>
+    </div>
+  </body>
+</html>

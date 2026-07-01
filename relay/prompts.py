@@ -93,10 +93,13 @@ def subtask_messages(
     *,
     images: list[str] | None = None,
     conversation_history: str = "",
+    web_context: str = "",
 ) -> list[Message]:
     context = ""
     if conversation_history:
         context += f"\n\n{conversation_history}"
+    if web_context:
+        context += f"\n\n{web_context}"
     if prior_results:
         context += "\n\nPrior subtask results:\n" + "\n\n".join(
             f"[{r.subtask.id} via {r.route}] {r.content}" for r in prior_results

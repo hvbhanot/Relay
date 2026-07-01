@@ -41,9 +41,11 @@ _PUBLIC_KEYS = {
     "openai_compat_model",
     "cloud_model_map",
     "request_timeout_seconds",
+    "web_search_enabled",
+    "cloud_redaction",
 }
 
-_SECRET_KEYS = {"openrouter_api_key", "openai_compat_api_key"}
+_SECRET_KEYS = {"openrouter_api_key", "openai_compat_api_key", "ollama_api_key"}
 _UI_ONLY_KEYS = {"planner_preview_enabled"}
 _UI_ONLY_DEFAULTS = {"planner_preview_enabled": True}
 _PRIVACY_MODES = {"strict", "balanced", "permissive"}
@@ -100,7 +102,7 @@ def apply_ui_overrides(config: RouterConfig, overrides: dict[str, Any]) -> Route
     if "cloud_model_map" in values:
         values["cloud_model_map"] = _sanitize_model_map(values["cloud_model_map"], config.cloud_model_map)
 
-    for key in ("cloud_enabled",):
+    for key in ("cloud_enabled", "web_search_enabled", "cloud_redaction"):
         if key in values:
             values[key] = _coerce_bool(values[key], getattr(config, key))
 

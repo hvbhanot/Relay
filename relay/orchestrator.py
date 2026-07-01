@@ -5,7 +5,7 @@ import json
 import re
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from .attachments import (
@@ -21,13 +21,18 @@ from .cloud_pool import CloudPool
 from .config import RouterConfig
 from .conversation_history import conversation_prompt_block, prompt_with_conversation
 from .local_providers import build_local_provider
-from .policy import RoutingPolicy
+from .policy import CURRENT_INFO_TERMS, RoutingPolicy
+from .redaction import RedactionState, redact_messages, restore_text
 from .secrets_store import api_key_looks_usable
 from .prompts import evaluator_messages, planner_messages, subtask_messages, synthesis_messages
 from .providers import ChatProvider, CompletionResult, OllamaProvider, ProviderError
 from .schema import Capability, Message, Plan, RouteDecision, RouteName, RouterTrace, Subtask, SubtaskResult, TokenUsage
 from .usage import aggregate_run_usage, merge_usage, usage_to_dict
 from .util import clamp_float, extract_json_object
+from .web_search import ollama_web_fetch, ollama_web_search, search_results_block
+
+# Capabilities that trigger a pre-flight web search when search is configured.
+_SEARCH_CAPABILITIES = {Capability.CURRENT_INFO.value, Capability.SOURCES.value}
 
 
 class Relay:
@@ -39,6 +44,9 @@ class Relay:
         *,
         max_subtasks: int = 6,
         cloud_pool: CloudPool | None = None,
+        search: Callable[[str], list[dict[str, str]]] | None = None,
+        fetch_page: Callable[[str], str] | None = None,
+        redact_cloud: bool = False,
     ) -> None:
         self.local = local_provider
         self.cloud = cloud_provider
@@ -48,12 +56,23 @@ class Relay:
         # When absent, cloud routing falls back to the single `cloud` provider, so
         # directly-constructed routers keep their original single-model behaviour.
         self._cloud_pool = cloud_pool
+        # Optional query -> results callable for current_info/sources subtasks.
+        self._search = search
+        # Optional url -> page-content callable used to deepen the top search hit.
+        self._fetch_page = fetch_page
+        # Mask secrets/PII in prompts before they leave for a cloud model.
+        self._redact_cloud = redact_cloud
         self._attachments: list[Attachment] = []
         self._history: list[Message] = []
         self._local_vision_cache: bool | None = None
 
     @classmethod
-    def from_config(cls, config: RouterConfig | None = None) -> "Relay":
+    def from_config(
+        cls,
+        config: RouterConfig | None = None,
+        *,
+        confidence_bias: float = 0.0,
+    ) -> "Relay":
         config = config or RouterConfig.from_env()
         local = build_local_provider(config)
         cloud: ChatProvider | None = None
@@ -63,16 +82,33 @@ class Relay:
             if pool.is_active():
                 cloud_pool = pool
                 cloud = pool.default_provider
+        search: Callable[[str], list[dict[str, str]]] | None = None
+        fetch_page: Callable[[str], str] | None = None
+        if config.web_search_enabled and config.ollama_api_key:
+            search_key = config.ollama_api_key
+            search_timeout = min(20.0, config.request_timeout_seconds)
+
+            def search(query: str) -> list[dict[str, str]]:
+                return ollama_web_search(query, search_key, timeout=search_timeout)
+
+            def fetch_page(url: str) -> str:
+                return ollama_web_fetch(url, search_key, timeout=search_timeout)
+
+        # Feedback bias shifts when local answers are escalated to cloud.
+        threshold = min(0.95, max(0.0, config.min_local_confidence + confidence_bias))
         return cls(
             local,
             cloud,
             RoutingPolicy(
                 cloud_enabled=config.cloud_enabled and cloud is not None,
                 privacy_mode=config.privacy_mode,
-                min_local_confidence=config.min_local_confidence,
+                min_local_confidence=threshold,
             ),
             max_subtasks=config.max_subtasks,
             cloud_pool=cloud_pool,
+            search=search,
+            fetch_page=fetch_page,
+            redact_cloud=config.cloud_redaction,
         )
 
     def _resolve_cloud(self, subtask: Subtask) -> tuple[ChatProvider | None, str | None]:
@@ -132,6 +168,7 @@ class Relay:
         plan: Plan | None = None,
         attachments: list[Attachment] | None = None,
         history: list[Message] | None = None,
+        route_override: str | None = None,
     ) -> RouterTrace:
         def emit(event: dict[str, Any]) -> None:
             if on_event is not None:
@@ -145,6 +182,7 @@ class Relay:
             if plan is None:
                 emit({"type": "planning"})
                 plan = self.plan(user_prompt, attachments=self._attachments, history=self._history)
+            plan = force_plan_route(plan, route_override)
             self._emit_planned(plan, emit)
             return self.execute(user_prompt, plan, emit)
         finally:
@@ -219,8 +257,57 @@ class Relay:
             return []
         return image_payloads(self._attachments)
 
+    def _web_context_for(self, subtask: Subtask) -> tuple[str, list[dict[str, str]] | None]:
+        """Fetch web results for current-info subtasks. Failures never block the run.
+
+        Triggers on the same signals the routing policy uses: the current_info/sources
+        capability tags OR current-info keywords in the subtask text. Without the text
+        check, a subtask routed to cloud *because* it needs current info (keyword match,
+        untagged by the planner) would never get a search.
+        """
+        if self._search is None:
+            return "", None
+        tagged = bool(set(subtask.capabilities) & _SEARCH_CAPABILITIES)
+        if not tagged and not CURRENT_INFO_TERMS.search(f"{subtask.title}\n{subtask.prompt}"):
+            return "", None
+        query = " ".join(f"{subtask.title} {subtask.prompt}".split())[:200]
+        try:
+            results = self._search(query)
+        except Exception:  # noqa: BLE001 - a failed search just means no fresh context
+            return "", None
+        if not results:
+            return "", None
+        sources = [{"title": item["title"], "url": item["url"]} for item in results]
+        block = search_results_block(results)
+        # Deepen the top hit with its full page content when a fetcher is available.
+        if self._fetch_page is not None:
+            try:
+                page = self._fetch_page(results[0]["url"])
+            except Exception:  # noqa: BLE001 - snippets alone are still useful
+                page = ""
+            if page:
+                block += f"\n\nFull content of top result ({results[0]['url']}):\n{page}"
+        return block, sources
+
     def _conversation_block(self) -> str:
         return conversation_prompt_block(self._history)
+
+    def _prepare_cloud_messages(
+        self,
+        messages: list[Message],
+        going_to_cloud: bool,
+    ) -> tuple[list[Message], RedactionState | None]:
+        """Mask secrets before a prompt leaves for a cloud model (when enabled)."""
+        if not going_to_cloud or not self._redact_cloud:
+            return messages, None
+        return redact_messages(messages)
+
+    @staticmethod
+    def _redaction_note(state: RedactionState | None) -> str:
+        if state is None:
+            return ""
+        count = len(state.replacements)
+        return f" Redacted {count} secret{'s' if count != 1 else ''} before cloud."
 
     def execute(
         self,
@@ -393,6 +480,7 @@ class Relay:
             "duration_seconds": result.duration_seconds,
             "preview": Relay._preview_text(result.content) if result.content and not result.error else "",
             "usage": usage_to_dict(result.usage),
+            "sources": result.sources,
         }
         return payload
 
@@ -412,6 +500,7 @@ class Relay:
                 "duration_seconds": event["duration_seconds"],
                 "preview": event["preview"],
                 "usage": event["usage"],
+                "sources": event["sources"],
             }
         )
 
@@ -469,19 +558,22 @@ class Relay:
         emit({"type": "subtask_start", "id": subtask.id, "title": subtask.title})
         emit({"type": "answering"})
 
+        web_context, web_sources = self._web_context_for(subtask)
         messages = subtask_messages(
             user_prompt,
             subtask,
             [],
             images=self._images_for_subtask(subtask),
             conversation_history=self._conversation_block(),
+            web_context=web_context,
         )
+        call_messages, red_state = self._prepare_cloud_messages(messages, use_cloud)
         on_token = lambda chunk: emit({"type": "token", "text": chunk})  # noqa: E731
         error: str | None = None
         usage: TokenUsage | None = None
         try:
-            stream_result = self._stream_provider(provider, messages, on_token)
-            content = stream_result.text
+            stream_result = self._stream_provider(provider, call_messages, on_token)
+            content = restore_text(stream_result.text, red_state)
             usage = stream_result.usage
             usage_calls.append(self._usage_call("subtask", stream_result, route=route, model=model))
         except ProviderError as exc:
@@ -499,16 +591,19 @@ class Relay:
                 content, error = "", str(exc)
 
         duration = round(time.monotonic() - started, 3)
+        search_note = f" Web search: {len(web_sources)} result(s)." if web_sources else ""
+        search_note += self._redaction_note(red_state)
         result = SubtaskResult(
             subtask,
             route,
             content,
             None,
-            decision.reason + cloud_note,
+            decision.reason + cloud_note + search_note,
             error=error,
             model=model,
             usage=usage,
             duration_seconds=duration,
+            sources=web_sources,
         )
         self._emit_subtask_done(result, emit)
         final_answer = content if not error else f"Subtask failed: {error}"
@@ -601,23 +696,31 @@ class Relay:
 
         # The evaluator is a *second* local LLM call whose only purpose is deciding
         # whether to escalate a local answer to cloud. When that escalation is
-        # impossible (cloud off, or no cloud provider) it is pure latency, so skip
-        # it. This is the main reason simple local-only requests felt slow.
-        can_escalate = (not use_cloud) and cloud_provider is not None and self.policy.cloud_enabled
+        # impossible (cloud off, no cloud provider, or the route was explicitly
+        # forced local) it is pure latency, so skip it.
+        can_escalate = (
+            (not use_cloud)
+            and cloud_provider is not None
+            and self.policy.cloud_enabled
+            and subtask.preferred_route != "local"
+        )
         usage: TokenUsage | None = None
+        web_context, web_sources = self._web_context_for(subtask)
+        search_note = f" Web search: {len(web_sources)} result(s)." if web_sources else ""
 
+        worker_messages = subtask_messages(
+            user_prompt,
+            subtask,
+            prior_results,
+            images=self._images_for_subtask(subtask),
+            conversation_history=self._conversation_block(),
+            web_context=web_context,
+        )
+        call_messages, red_state = self._prepare_cloud_messages(worker_messages, use_cloud)
+        search_note += self._redaction_note(red_state)
         try:
-            worker_result = provider.complete(
-                subtask_messages(
-                    user_prompt,
-                    subtask,
-                    prior_results,
-                    images=self._images_for_subtask(subtask),
-                    conversation_history=self._conversation_block(),
-                ),
-                temperature=0.2,
-            )
-            content = worker_result.text
+            worker_result = provider.complete(call_messages, temperature=0.2)
+            content = restore_text(worker_result.text, red_state)
             usage = worker_result.usage
             usage_calls.append(self._usage_call("subtask", worker_result, route=route, model=model))
         except ProviderError as exc:
@@ -625,16 +728,8 @@ class Relay:
                 # Cloud failure on simple work can fall back local; difficult tasks stay off local.
                 fallback_decision = RouteDecision("local", f"Cloud model {model} failed ({exc}); fell back to local.", decision.cloud_allowed)
                 try:
-                    worker_result = self.local.complete(
-                        subtask_messages(
-                            user_prompt,
-                            subtask,
-                            prior_results,
-                            images=self._images_for_subtask(subtask),
-                            conversation_history=self._conversation_block(),
-                        ),
-                        temperature=0.2,
-                    )
+                    # Local fallback gets the original, unredacted messages.
+                    worker_result = self.local.complete(worker_messages, temperature=0.2)
                     content = worker_result.text
                     usage = worker_result.usage
                     usage_calls.append(self._usage_call("subtask", worker_result, route="local", model=local_model))
@@ -645,10 +740,11 @@ class Relay:
                             "local",
                             content,
                             None,
-                            fallback_decision.reason,
+                            fallback_decision.reason + search_note,
                             model=local_model,
                             usage=usage,
                             duration_seconds=duration,
+                            sources=web_sources,
                         ),
                         fallback_decision,
                         usage_calls,
@@ -702,16 +798,8 @@ class Relay:
             retry_decision = self.policy.decide_after_local_eval(subtask, confidence, needs_cloud_retry)
             if retry_decision and cloud_provider is not None:
                 try:
-                    cloud_result = cloud_provider.complete(
-                        subtask_messages(
-                            user_prompt,
-                            subtask,
-                            prior_results,
-                            images=self._images_for_subtask(subtask),
-                            conversation_history=self._conversation_block(),
-                        ),
-                        temperature=0.2,
-                    )
+                    retry_messages, retry_red = self._prepare_cloud_messages(worker_messages, True)
+                    cloud_result = cloud_provider.complete(retry_messages, temperature=0.2)
                     retry_model = cloud_model or model
                     usage_calls.append(self._usage_call("subtask_retry", cloud_result, route="cloud", model=retry_model))
                     duration = round(time.monotonic() - started, 3)
@@ -719,12 +807,13 @@ class Relay:
                         SubtaskResult(
                             subtask,
                             "cloud",
-                            cloud_result.text,
+                            restore_text(cloud_result.text, retry_red),
                             None,
-                            retry_decision.reason + f" Cloud model: {retry_model}.",
+                            retry_decision.reason + f" Cloud model: {retry_model}." + search_note + self._redaction_note(retry_red),
                             model=retry_model,
                             usage=merge_usage(usage, cloud_result.usage),
                             duration_seconds=duration,
+                            sources=web_sources,
                         ),
                         retry_decision,
                         usage_calls,
@@ -738,10 +827,11 @@ class Relay:
                     route,
                     content,
                     confidence,
-                    decision.reason + cloud_note + " " + eval_reason,
+                    decision.reason + cloud_note + search_note + " " + eval_reason,
                     model=model,
                     usage=usage,
                     duration_seconds=duration,
+                    sources=web_sources,
                 ),
                 decision,
                 usage_calls,
@@ -749,7 +839,17 @@ class Relay:
 
         duration = round(time.monotonic() - started, 3)
         return (
-            SubtaskResult(subtask, route, content, None, decision.reason + cloud_note, model=model, usage=usage, duration_seconds=duration),
+            SubtaskResult(
+                subtask,
+                route,
+                content,
+                None,
+                decision.reason + cloud_note + search_note,
+                model=model,
+                usage=usage,
+                duration_seconds=duration,
+                sources=web_sources,
+            ),
             decision,
             usage_calls,
         )
@@ -783,6 +883,22 @@ class Relay:
             for result in results:
                 parts.append(f"\n## {result.subtask.title} ({result.route})\n{result.content}")
             return "\n".join(parts)
+
+
+def force_plan_route(plan: Plan, route: str | None) -> Plan:
+    """Pin every subtask to one route ("local"/"cloud"); any other value is a no-op.
+
+    Privacy policy still wins over a forced cloud route, and forcing cloud with
+    cloud disabled degrades to local with an explanatory reason.
+    """
+    if route not in ("local", "cloud"):
+        return plan
+    return Plan(
+        summary=plan.summary,
+        requires_online=plan.requires_online,
+        final_response_instructions=plan.final_response_instructions,
+        subtasks=[replace(subtask, preferred_route=route) for subtask in plan.subtasks],
+    )
 
 
 _FENCE_RE = re.compile(r"```([^\n]*)\n(.*?)```", re.DOTALL)

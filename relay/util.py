@@ -4,13 +4,7 @@ import json
 import re
 from typing import Any
 
-from .schema import Message
-
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
-
-
-def messages_to_prompt(messages: list[Message]) -> str:
-    return "\n\n".join(f"{m.role.upper()}: {m.content}" for m in messages)
 
 
 def extract_json_object(text: str) -> dict[str, Any]:

@@ -113,12 +113,76 @@ def delete_session(session_id: str, path: str | Path = DEFAULT_HISTORY_PATH) -> 
     return len(store["sessions"]) < before
 
 
+def rename_session(session_id: str, title: str, path: str | Path = DEFAULT_HISTORY_PATH) -> dict[str, Any]:
+    store = load_store(path)
+    for session in store["sessions"]:
+        if isinstance(session, dict) and session.get("id") == session_id:
+            session["title"] = _session_title(title) if title.strip() else "Untitled chat"
+            save_store(store, path)
+            return session
+    raise ValueError(f"Unknown session: {session_id}")
+
+
+def pop_last_message(
+    session_id: str,
+    *,
+    role: str | None = None,
+    path: str | Path = DEFAULT_HISTORY_PATH,
+) -> dict[str, Any] | None:
+    """Remove and return the session's last message (optionally only if it has `role`)."""
+    store = load_store(path)
+    for session in store["sessions"]:
+        if not (isinstance(session, dict) and session.get("id") == session_id):
+            continue
+        messages = session.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return None
+        last = messages[-1]
+        if role and (not isinstance(last, dict) or last.get("role") != role):
+            return None
+        messages.pop()
+        session["updated_at"] = _now_iso()
+        save_store(store, path)
+        return last if isinstance(last, dict) else None
+    raise ValueError(f"Unknown session: {session_id}")
+
+
+# Cap stored image payloads (~400KB binary as base64) so a few screenshots don't
+# balloon relay.history.json; oversized images degrade to a name-only chip.
+_MAX_STORED_IMAGE_B64 = 550_000
+
+
+def _sanitize_attachments(raw: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(raw, list):
+        return None
+    cleaned: list[dict[str, Any]] = []
+    for item in raw[:8]:
+        if not isinstance(item, dict) or item.get("kind") not in ("text", "image"):
+            continue
+        try:
+            size = int(item.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        entry: dict[str, Any] = {
+            "name": str(item.get("name") or "attachment")[:120],
+            "mime": str(item.get("mime") or ""),
+            "kind": item["kind"],
+            "size_bytes": size,
+        }
+        data = item.get("data")
+        if item["kind"] == "image" and isinstance(data, str) and len(data) <= _MAX_STORED_IMAGE_B64:
+            entry["data"] = data
+        cleaned.append(entry)
+    return cleaned or None
+
+
 def append_message(
     session_id: str,
     *,
     role: str,
     content: str,
     trace: dict[str, Any] | None = None,
+    attachments: Any = None,
     path: str | Path = DEFAULT_HISTORY_PATH,
 ) -> dict[str, Any]:
     if role not in {"user", "assistant"}:
@@ -136,6 +200,9 @@ def append_message(
     message: dict[str, Any] = {"role": role, "content": content, "created_at": now}
     if trace is not None:
         message["trace"] = trace
+    stored_attachments = _sanitize_attachments(attachments)
+    if stored_attachments:
+        message["attachments"] = stored_attachments
     messages = session.setdefault("messages", [])
     if not isinstance(messages, list):
         messages = []

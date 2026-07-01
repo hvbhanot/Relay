@@ -50,29 +50,53 @@ That opens the UI in your browser, usually at `http://127.0.0.1:8090`.
 To start without auto-opening the browser:
 
 ```bash
-./relay.sh --host 127.0.0.1 --port 8090
+./relay.sh serve --host 127.0.0.1 --port 8090
 ```
 
 Or after installing the package locally:
 
 ```bash
 pip install -e .
-relay --open
+relay serve --open
 ```
 
 ### 3. Use the UI
 
-The browser UI includes:
+Full usage docs live in the app at **`/docs`** (models, routing, the cloud pool,
+web search, privacy, API). Highlights:
 
-- Ollama setup and model picker
-- local / cloud ping
-- planner preview before running
-- chat history saved locally
-- routing trace inspector
-- cloud model pool (OpenRouter)
-- privacy mode and routing thresholds
+**Routing & privacy**
 
-Setup is saved to `relay.ui.json`. Chat history is saved to `relay.history.json`. Both are gitignored because they may contain API keys.
+- per-request route toggle (Auto / Local / Cloud) and a Web search toggle in the composer
+- privacy badge on every answer: green "Local only — never left your machine",
+  amber "Via Ollama Cloud" (when the local model is an Ollama `-cloud` model),
+  or blue "N of M subtasks via cloud"
+- secret redaction before cloud: API keys, emails, SSNs, card numbers, and
+  `password=…` values are masked before prompts leave for cloud models and
+  restored in the answer locally (on by default)
+- privacy modes and routing thresholds; a warning when the configured "local"
+  model is actually an Ollama Cloud model
+- thumbs up/down feedback that tunes the local-confidence threshold over time
+
+**Chat**
+
+- planner preview: edit, add, remove, and re-route subtasks before running
+- Stop button for in-flight requests; regenerate the latest answer; edit-and-resend
+- chat history saved locally with search, rename, delete, and Markdown export
+- attachments (images + text files) that persist with history
+- routing trace inspector with per-subtask reasons, sources, cost, and a
+  retry button for failed subtasks
+- syntax-highlighted code blocks with one-click copy
+
+**Models**
+
+- local providers: Ollama, LM Studio, llama.cpp server, vLLM (picker + ping)
+- cloud model pool (OpenRouter): route each capability to a different model
+- optional web search for current-info subtasks (Ollama web search + web_fetch)
+
+Setup is saved to `relay.ui.json`. Chat history is saved to `relay.history.json`,
+feedback to `relay.feedback.json`. All are gitignored. API keys are never written
+to these files — they are kept in an encrypted local vault at `~/.relay/secrets.enc`.
 
 If `relay.ui.json` is missing, Relay falls back to the legacy `modelrouter.ui.json` path.
 
@@ -95,6 +119,14 @@ export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export OPENROUTER_MODEL=anthropic/claude-sonnet-4.6
 ```
 
+Web search and redaction:
+
+```bash
+export RELAY_ENABLE_WEB_SEARCH=1   # fresh results for current-info subtasks
+export OLLAMA_API_KEY=...          # free key from ollama.com/settings/keys
+export RELAY_REDACT_CLOUD=1        # mask secrets before cloud calls (default)
+```
+
 Legacy `MODELROUTER_*` environment variables are still accepted.
 
 ## Routing policy
@@ -103,8 +135,27 @@ Important defaults:
 
 - `cloud_enabled` defaults to `false`.
 - `privacy_mode` defaults to `balanced`.
+- `cloud_redaction` defaults to `true` (secrets are masked before cloud calls).
 - current-events and source-requiring tasks are routed online only if cloud is enabled.
 - sensitive-looking subtasks stay local unless you explicitly set `privacy_mode=permissive`.
+- 👍/👎 feedback on fully-local answers nudges the escalation threshold (±0.15 max).
+
+## API & CLI
+
+The UI server doubles as an OpenAI-compatible endpoint, so any OpenAI client can
+use the full plan → route → synthesize pipeline:
+
+```bash
+curl http://127.0.0.1:8090/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{"model": "relay", "messages": [{"role": "user", "content": "hello"}]}'
+```
+
+The `model` parameter can pin the route: `relay:local` forces local,
+`relay:cloud` prefers cloud, plain `relay` uses auto routing.
+
+Headless CLI: `relay ask "…"` (add `--stream` or `--json`), `relay plan "…"` to
+preview routing without running, `relay api` for an API-only server.
 
 ## Multiple cloud models
 
@@ -114,9 +165,9 @@ subtask to a *different* model based on its capability.
 Defaults (see `DEFAULT_CLOUD_MODEL_MAP` in `config.py`):
 
 ```text
-reasoning / math / coding / high_stakes -> anthropic/claude-opus-4.8
-current_info / sources / large_context  -> openai/gpt-5.5
-everything else (default)               -> anthropic/claude-sonnet-4.6
+reasoning / math / coding / high_stakes        -> anthropic/claude-opus-4.8
+current_info / sources / large_context / vision -> openai/gpt-5.5
+everything else (default)                      -> anthropic/claude-sonnet-4.6
 ```
 
 Customize the map in the browser UI (OpenRouter → "Cloud model pool") or via the
@@ -193,12 +244,16 @@ Notes:
 ```text
 relay.sh               start the browser UI
 relay/
-  webui.py             browser UI backend
-  webui_assets/        browser UI HTML/CSS/JS
+  webui.py             browser UI backend + OpenAI-compatible endpoint
+  webui_assets/        browser UI HTML/CSS/JS and the /docs page
   orchestrator.py      plan -> route -> execute -> synthesize loop
   policy.py            local/cloud routing decisions
   cloud_pool.py        capability -> cloud model selection
-  chat_history.py      saved conversations
+  web_search.py        Ollama web search + web_fetch integration
+  redaction.py         secret masking for cloud-bound prompts
+  feedback.py          answer feedback -> confidence-threshold bias
+  chat_history.py      saved conversations (rename/delete/attachments)
+  secrets_store.py     encrypted local vault for API keys
   ui_config.py         UI-managed persistent setup
   config.py            environment config
   providers.py         Ollama and OpenAI-compatible providers
@@ -209,7 +264,9 @@ tests/
 ## Notes
 
 Relay intentionally favors local execution and privacy over aggressively using cloud models.
-UI-managed API keys are stored as plain text in `relay.ui.json`; keep that file private.
+UI-managed API keys are stored in an encrypted local vault (`~/.relay/secrets.enc`), never in
+`relay.ui.json`; any keys found inline in an older `relay.ui.json` are migrated into the vault
+on first load.
 
 ## License
 

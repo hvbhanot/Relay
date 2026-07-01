@@ -52,6 +52,17 @@ def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+def route_mode_from_model(model: str) -> str | None:
+    """Map "relay:local"/"relay:cloud" model ids to a route override."""
+    name = str(model or "").strip().lower()
+    if ":" not in name:
+        return None
+    base, _, suffix = name.rpartition(":")
+    if base.startswith("relay") and suffix in ("local", "cloud"):
+        return suffix
+    return None
+
+
 def parse_chat_completion_request(payload: dict[str, Any]) -> tuple[str, str, bool]:
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -159,11 +170,13 @@ def stream_finish(*, completion_id: str, created: int, model: str) -> Iterator[s
 def models_dict(*, local_models: list[str] | None = None) -> dict[str, Any]:
     data = [
         {
-            "id": DEFAULT_MODEL,
+            "id": name,
             "object": "model",
             "created": int(time.time()),
             "owned_by": "relay",
         }
+        # relay:local / relay:cloud pin the route for the whole request.
+        for name in (DEFAULT_MODEL, f"{DEFAULT_MODEL}:local", f"{DEFAULT_MODEL}:cloud")
     ]
     for name in local_models or []:
         if name == DEFAULT_MODEL:

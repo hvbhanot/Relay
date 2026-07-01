@@ -7,10 +7,6 @@ from pathlib import Path
 
 from .schema import PrivacyMode
 
-# Default capability -> cloud model map. Used only for the OpenRouter provider,
-# where a single key unlocks many models. A subtask is routed to the model mapped
-# to its highest-priority capability; anything unmapped uses the default cloud
-# model (`openrouter_model`). All slugs are editable in Setup or via env.
 LOCAL_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "ollama": ("http://localhost:11434", "llama3.1:8b"),
     "lmstudio": ("http://localhost:1234/v1", "local-model"),
@@ -19,6 +15,10 @@ LOCAL_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
 }
 LOCAL_OPENAI_PROVIDERS = frozenset({"lmstudio", "llamacpp", "vllm"})
 
+# Default capability -> cloud model map. Used only for the OpenRouter provider,
+# where a single key unlocks many models. A subtask is routed to the model mapped
+# to its highest-priority capability; anything unmapped uses the default cloud
+# model (`openrouter_model`). All slugs are editable in Setup or via env.
 DEFAULT_CLOUD_MODEL_MAP: dict[str, str] = {
     "high_stakes": "anthropic/claude-opus-4.8",
     "reasoning": "anthropic/claude-opus-4.8",
@@ -122,6 +122,13 @@ class RouterConfig:
 
     request_timeout_seconds: float = 120.0
 
+    # Ollama-hosted web search for current_info/sources subtasks (ollama.com key).
+    web_search_enabled: bool = False
+    ollama_api_key: str | None = None
+
+    # Mask secrets/PII in prompts before they are sent to cloud models.
+    cloud_redaction: bool = True
+
     @classmethod
     def from_env(cls, *, load_dotenv: bool = True) -> "RouterConfig":
         if load_dotenv:
@@ -158,4 +165,7 @@ class RouterConfig:
             openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", "gpt-5.5"),
             cloud_model_map=_str_map("RELAY_CLOUD_MODEL_MAP", DEFAULT_CLOUD_MODEL_MAP, legacy="MODELROUTER_CLOUD_MODEL_MAP"),
             request_timeout_seconds=_float("RELAY_TIMEOUT", 120.0, legacy="MODELROUTER_TIMEOUT"),
+            web_search_enabled=_bool("RELAY_ENABLE_WEB_SEARCH", False),
+            ollama_api_key=os.getenv("OLLAMA_API_KEY") or None,
+            cloud_redaction=_bool("RELAY_REDACT_CLOUD", True),
         )

@@ -76,6 +76,7 @@ class SubtaskResult:
     model: str | None = None
     usage: TokenUsage | None = None
     duration_seconds: float | None = None
+    sources: list[dict[str, str]] | None = None
 
 
 @dataclass(slots=True)

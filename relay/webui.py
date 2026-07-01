@@ -6,8 +6,6 @@ import mimetypes
 import queue
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +20,7 @@ from .openai_api import (
     error_response,
     models_dict,
     parse_chat_completion_request,
-    stream_chunks,
+    route_mode_from_model,
     stream_finish,
     stream_start,
     stream_token,
@@ -35,11 +33,15 @@ from .chat_history import (
     ensure_active_session,
     get_session,
     list_sessions,
+    pop_last_message,
+    rename_session,
     set_active_session,
 )
 from .config import RouterConfig
-from .orchestrator import Relay, plan_from_dict, plan_to_dict, trace_to_dict
+from .feedback import DEFAULT_FEEDBACK_PATH, bias_note, confidence_bias, record_feedback
+from .orchestrator import Relay, force_plan_route, plan_from_dict, plan_to_dict, trace_to_dict
 from .providers import ProviderError
+from .web_search import ollama_web_search
 from .schema import Message
 from .ui_config import (
     DEFAULT_UI_CONFIG_PATH,
@@ -52,20 +54,32 @@ from .ui_config import (
 ASSET_DIR = Path(__file__).with_name("webui_assets")
 
 
+def _route_mode(payload: dict[str, Any]) -> str | None:
+    """Read the optional per-request route override ("local"/"cloud"/None)."""
+    mode = str(payload.get("route_mode") or "").strip().lower()
+    return mode if mode in {"local", "cloud"} else None
+
+
 class WebUIApp:
     def __init__(
         self,
         *,
         config_path: str | Path = DEFAULT_UI_CONFIG_PATH,
         history_path: str | Path = DEFAULT_HISTORY_PATH,
+        feedback_path: str | Path = DEFAULT_FEEDBACK_PATH,
         load_dotenv: bool = True,
     ) -> None:
         self.config_path = Path(config_path)
         self.history_path = Path(history_path)
+        self.feedback_path = Path(feedback_path)
         self.load_dotenv = load_dotenv
         self.lock = threading.RLock()
         self.config = config_from_sources(load_dotenv=load_dotenv, path=self.config_path)
-        self.router = Relay.from_config(self.config)
+        self.router = self._build_router()
+
+    def _build_router(self) -> Relay:
+        # Answer feedback shifts the local-confidence threshold over time.
+        return Relay.from_config(self.config, confidence_bias=confidence_bias(self.feedback_path))
 
     def public_config(self) -> dict[str, Any]:
         with self.lock:
@@ -74,7 +88,7 @@ class WebUIApp:
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self.config = save_ui_payload(payload, path=self.config_path)
-            self.router = Relay.from_config(self.config)
+            self.router = self._build_router()
             return self.public_config()
 
     def available_models_for_plan(self) -> dict[str, list[str]]:
@@ -95,12 +109,13 @@ class WebUIApp:
         *,
         attachments_data: Any = None,
         history_data: Any = None,
+        route_mode: str | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             router = self.router
         attachments = parse_attachments(attachments_data)
         history = parse_conversation_history(history_data)
-        plan = router.plan(message, attachments=attachments, history=history)
+        plan = force_plan_route(router.plan(message, attachments=attachments, history=history), route_mode)
         return {
             "message": message,
             "plan": plan_to_dict(plan),
@@ -109,10 +124,19 @@ class WebUIApp:
             "attachments": [item.to_dict() for item in attachments],
         }
 
-    def preview_plan_routes(self, plan_data: dict[str, Any], *, user_prompt: str = "") -> dict[str, Any]:
+    def preview_plan_routes(
+        self,
+        plan_data: dict[str, Any],
+        *,
+        user_prompt: str = "",
+        route_mode: str | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             router = self.router
-        plan = plan_from_dict(plan_data, max_subtasks=router.max_subtasks, user_prompt=user_prompt)
+        plan = force_plan_route(
+            plan_from_dict(plan_data, max_subtasks=router.max_subtasks, user_prompt=user_prompt),
+            route_mode,
+        )
         return {
             "plan": plan_to_dict(plan),
             "previews": router.preview_routes(plan),
@@ -127,6 +151,7 @@ class WebUIApp:
         plan_data: dict[str, Any] | None = None,
         attachments_data: Any = None,
         history_data: Any = None,
+        route_mode: str | None = None,
     ) -> dict[str, Any]:
         # Copy the router reference so a setup save does not mutate a request in flight.
         with self.lock:
@@ -136,7 +161,14 @@ class WebUIApp:
         plan = None
         if plan_data is not None:
             plan = plan_from_dict(plan_data, max_subtasks=router.max_subtasks, user_prompt=message)
-        trace = router.run(message, on_event=on_event, plan=plan, attachments=attachments, history=history)
+        trace = router.run(
+            message,
+            on_event=on_event,
+            plan=plan,
+            attachments=attachments,
+            history=history,
+            route_override=route_mode,
+        )
         trace_dict = trace_to_dict(trace)
         usage = trace.metadata.get("usage") if isinstance(trace.metadata, dict) else None
         return {
@@ -154,6 +186,7 @@ class WebUIApp:
                     "error": result.error,
                     "duration_seconds": result.duration_seconds,
                     "usage": asdict(result.usage) if result.usage else None,
+                    "sources": result.sources,
                 }
                 for result in trace.results
             ],
@@ -182,6 +215,7 @@ class WebUIApp:
 
     def openai_chat_completions(self, payload: dict[str, Any], *, write: Any = None) -> dict[str, Any] | None:
         prompt, model, stream = parse_chat_completion_request(payload)
+        route_mode = route_mode_from_model(model)
         if stream:
             completion_id, created, first = stream_start(model)
             if write is not None:
@@ -198,13 +232,13 @@ class WebUIApp:
                 )
                 write(frame.encode("utf-8"))
 
-            result = self.run_chat(prompt, on_event=on_event)
+            result = self.run_chat(prompt, on_event=on_event, route_mode=route_mode)
             if write is not None:
                 for frame in stream_finish(completion_id=completion_id, created=created, model=model):
                     write(frame.encode("utf-8"))
             return result
 
-        result = self.run_chat(prompt)
+        result = self.run_chat(prompt, route_mode=route_mode)
         return completion_dict(text=str(result.get("answer") or ""), model=model)
 
     def test_local(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -242,6 +276,37 @@ class WebUIApp:
             "response": result.text.strip()[:200],
         }
 
+    def test_search(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        config = self.preview_config(payload)
+        started = time.time()
+        results = ollama_web_search("Ollama latest release", config.ollama_api_key, max_results=3)
+        return {
+            "ok": True,
+            "latency_seconds": round(time.time() - started, 3),
+            "results": len(results),
+            "sample": results[0]["title"] if results else "",
+        }
+
+    def record_answer_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            score = int(payload.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        if score not in (-1, 1):
+            raise ValueError("score must be 1 or -1")
+        routes = payload.get("routes")
+        all_local: bool | None = None
+        models: list[str] = []
+        if isinstance(routes, list) and routes:
+            route_names = [str(r.get("route") or "") for r in routes if isinstance(r, dict)]
+            all_local = bool(route_names) and all(name == "local" for name in route_names)
+            models = [str(r.get("model")) for r in routes if isinstance(r, dict) and r.get("model")]
+        with self.lock:
+            record_feedback(score=score, all_local=all_local, models=models, path=self.feedback_path)
+            bias = confidence_bias(self.feedback_path)
+            self.router = self._build_router()
+        return {"bias": bias, "note": bias_note(bias)}
+
     def history_list(self) -> dict[str, Any]:
         with self.lock:
             data = list_sessions(self.history_path)
@@ -275,6 +340,7 @@ class WebUIApp:
         role: str,
         content: str,
         trace: dict[str, Any] | None = None,
+        attachments: Any = None,
     ) -> dict[str, Any]:
         with self.lock:
             return append_message(
@@ -282,8 +348,17 @@ class WebUIApp:
                 role=role,
                 content=content,
                 trace=trace,
+                attachments=attachments,
                 path=self.history_path,
             )
+
+    def history_rename(self, session_id: str, title: str) -> dict[str, Any]:
+        with self.lock:
+            return rename_session(session_id, title, path=self.history_path)
+
+    def history_pop(self, session_id: str, *, role: str | None = None) -> dict[str, Any] | None:
+        with self.lock:
+            return pop_last_message(session_id, role=role, path=self.history_path)
 
     def history_ensure_active(self) -> dict[str, Any]:
         with self.lock:
@@ -346,6 +421,9 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                 return
             if self.path == "/" or self.path == "/index.html":
                 self._send_file(ASSET_DIR / "index.html")
+                return
+            if self._path() in ("/docs", "/docs/"):
+                self._send_file(ASSET_DIR / "docs.html")
                 return
             if self.path.startswith("/assets/"):
                 name = self.path.removeprefix("/assets/").split("?", 1)[0]
@@ -414,6 +492,7 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                         message,
                         attachments_data=payload.get("attachments"),
                         history_data=payload.get("history"),
+                        route_mode=_route_mode(payload),
                     ),
                 })
                 return
@@ -422,7 +501,10 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                 if not isinstance(plan_data, dict):
                     raise ValueError("plan is required")
                 message = str(payload.get("message", "")).strip()
-                self._send_json({"ok": True, **self.app.preview_plan_routes(plan_data, user_prompt=message)})
+                self._send_json({
+                    "ok": True,
+                    **self.app.preview_plan_routes(plan_data, user_prompt=message, route_mode=_route_mode(payload)),
+                })
                 return
             if self.path == "/api/chat/stream":
                 message = str(payload.get("message", "")).strip()
@@ -435,7 +517,14 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                     plan_data if isinstance(plan_data, dict) else None,
                     attachments_data=attachments_data,
                     history_data=payload.get("history"),
+                    route_mode=_route_mode(payload),
                 )
+                return
+            if self.path == "/api/feedback":
+                self._send_json({"ok": True, **self.app.record_answer_feedback(payload)})
+                return
+            if self.path == "/api/test-search":
+                self._send_json(self.app.test_search(payload))
                 return
             if self.path == "/api/history/deactivate":
                 self.app.history_set_active(None)
@@ -463,8 +552,23 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                     role=role,
                     content=content,
                     trace=trace if isinstance(trace, dict) else None,
+                    attachments=payload.get("attachments"),
                 )
                 self._send_json({"ok": True, "message": message})
+                return
+            if self.path.startswith("/api/history/") and self.path.endswith("/title"):
+                session_id = self.path.removeprefix("/api/history/").removesuffix("/title").strip("/")
+                title = str(payload.get("title", "")).strip()
+                if not title:
+                    raise ValueError("title is required")
+                session = self.app.history_rename(session_id, title)
+                self._send_json({"ok": True, "session": {"id": session.get("id"), "title": session.get("title")}})
+                return
+            if self.path.startswith("/api/history/") and self.path.endswith("/pop"):
+                session_id = self.path.removeprefix("/api/history/").removesuffix("/pop").strip("/")
+                role = str(payload.get("role", "")).strip() or None
+                removed = self.app.history_pop(session_id, role=role)
+                self._send_json({"ok": True, "removed": removed is not None})
                 return
             if self.path == "/api/test-local":
                 self._send_json(self.app.test_local(payload))
@@ -486,6 +590,7 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
         *,
         attachments_data: Any = None,
         history_data: Any = None,
+        route_mode: str | None = None,
     ) -> None:
         """Run a chat and stream phase events to the browser as Server-Sent Events.
 
@@ -506,6 +611,7 @@ class WebUIHandler(_RelayHTTPMixin, BaseHTTPRequestHandler):
                     plan_data=plan_data,
                     attachments_data=attachments_data,
                     history_data=history_data,
+                    route_mode=route_mode,
                 )
                 events.put({"type": "done", **result})
             except ProviderError as exc:

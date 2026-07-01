@@ -38,6 +38,10 @@ const fields = [
   "min_local_confidence",
   "max_subtasks",
   "planner_preview_enabled",
+  "web_search_enabled",
+  "ollama_api_key",
+  "ollama_api_key_clear",
+  "cloud_redaction",
 ];
 
 let currentConfig = null;
@@ -53,6 +57,25 @@ const MAX_ATTACHMENTS = 8;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 let pendingAttachments = [];
+let activeController = null;
+let routeMode = localStorage.getItem("relay.routeMode") || "auto";
+
+const SVG_SEND = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a1 1 0 0 0-1.39 1.2L4 11l8 1-8 1-1.99 6.2a1 1 0 0 0 1.39 1.2z"/></svg>';
+const SVG_STOP = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
+const SVG_THUMB_UP = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 20h2c.55 0 1-.45 1-1v-9c0-.55-.45-1-1-1H2v11zm19.83-7.12c.11-.25.17-.52.17-.8V11c0-1.1-.9-2-2-2h-5.5l.92-4.65c.05-.22.02-.46-.08-.66a4.8 4.8 0 0 0-.88-1.22L14 2 7.59 8.41C7.21 8.79 7 9.3 7 9.83v7.84A2.34 2.34 0 0 0 9.34 20h8.11c.7 0 1.36-.37 1.72-.97l2.66-6.15z"/></svg>';
+const SVG_THUMB_DOWN = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M22 4h-2c-.55 0-1 .45-1 1v9c0 .55.45 1 1 1h2V4zM2.17 11.12c-.11.25-.17.52-.17.8V13c0 1.1.9 2 2 2h5.5l-.92 4.65c-.05.22-.02.46.08.66.23.45.52.86.88 1.22L10 22l6.41-6.41c.38-.38.59-.89.59-1.42V6.34A2.34 2.34 0 0 0 14.66 4H6.56c-.71 0-1.36.37-1.73.97l-2.66 6.15z"/></svg>';
+
+function applyRouteMode(mode) {
+  routeMode = ["auto", "local", "cloud"].includes(mode) ? mode : "auto";
+  localStorage.setItem("relay.routeMode", routeMode);
+  document.querySelectorAll(".route-mode-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === routeMode);
+  });
+}
+
+function stopActiveRun() {
+  if (activeController) activeController.abort();
+}
 
 function resizeComposer() {
   const input = $("messageInput");
@@ -244,7 +267,13 @@ function setPill(id, text, kind = "muted") {
 
 function setBusy(nextBusy) {
   busy = nextBusy;
-  $("sendButton").disabled = nextBusy;
+  // While busy the send button becomes a Stop button instead of going dead.
+  const send = $("sendButton");
+  send.disabled = false;
+  send.classList.toggle("stop", nextBusy);
+  send.title = nextBusy ? "Stop" : "Send";
+  send.setAttribute("aria-label", nextBusy ? "Stop" : "Send");
+  send.innerHTML = nextBusy ? SVG_STOP : SVG_SEND;
   $("messageInput").disabled = nextBusy;
   const attach = $("attachButton");
   if (attach) attach.disabled = nextBusy;
@@ -266,17 +295,21 @@ function applyConfig(config) {
     } else {
       el.value = "";
       const hasKey =
-        id === "openrouter_api_key"
-          ? config.has_openrouter_api_key
-          : config.has_openai_compat_api_key;
+        id === "openrouter_api_key" ? config.has_openrouter_api_key
+        : id === "openai_compat_api_key" ? config.has_openai_compat_api_key
+        : config.has_ollama_api_key;
       const keyUsable =
-        id === "openrouter_api_key"
-          ? config.openrouter_api_key_usable
-          : config.openai_compat_api_key_usable;
+        id === "openrouter_api_key" ? config.openrouter_api_key_usable
+        : id === "openai_compat_api_key" ? config.openai_compat_api_key_usable
+        : undefined;
       if (hasKey && keyUsable === false) {
         el.placeholder = "Invalid key saved — paste sk-or-v1-… from openrouter.ai/keys";
+      } else if (hasKey) {
+        el.placeholder = "Saved key present; leave blank to keep";
       } else {
-        el.placeholder = hasKey ? "Saved key present; leave blank to keep" : "Paste sk-or-v1-… key from openrouter.ai/keys";
+        el.placeholder = id === "ollama_api_key"
+          ? "Paste key from ollama.com/settings/keys"
+          : "Paste sk-or-v1-… key from openrouter.ai/keys";
       }
     }
   }
@@ -290,7 +323,58 @@ function applyConfig(config) {
   updateProviderBlocks();
   updateLocalProviderHints();
   updatePrivacyModeHelp();
+  updateWebToggle();
+  renderWelcomeChips();
+  updateLocalModelWarning();
   setPill("saveState", "saved", "good");
+}
+
+// Warn when the "local" model is actually an Ollama Cloud (-cloud) model,
+// which executes on ollama.com's servers rather than this machine.
+function updateLocalModelWarning() {
+  const warning = $("localModelWarning");
+  if (!warning) return;
+  const typed = ($("ollama_model")?.value || "").trim();
+  const model = typed || currentConfig?.ollama_model || "";
+  if (isOllamaCloudModel(model)) {
+    warning.hidden = false;
+    warning.textContent =
+      `${model} is an Ollama Cloud model — it executes on ollama.com's servers, not this machine. ` +
+      "Answers will be badged “Via Ollama Cloud”. For fully local runs, pick a model without the " +
+      "-cloud tag (e.g. ollama pull gemma3).";
+  } else {
+    warning.hidden = true;
+    warning.textContent = "";
+  }
+}
+
+function updateWebToggle() {
+  const btn = $("webToggle");
+  if (!btn) return;
+  const on = Boolean(currentConfig?.web_search_enabled);
+  btn.classList.toggle("on", on);
+  btn.title = on
+    ? "Web search is on for current-info subtasks — click to turn off"
+    : "Web search is off — click to fetch fresh results for current-info subtasks";
+}
+
+async function toggleWebSearch() {
+  if (!currentConfig) return;
+  const next = !currentConfig.web_search_enabled;
+  try {
+    const data = await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ web_search_enabled: next }),
+    });
+    applyConfig(data.config);
+    if (next && !data.config.has_ollama_api_key) {
+      toast("Web search is on, but it needs an Ollama API key — add one in Settings → Web search.", "error");
+    } else {
+      toast(next ? "Web search on for current-info subtasks." : "Web search off.", "good");
+    }
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 const PRIVACY_MODE_HELP = {
@@ -324,32 +408,40 @@ function truncateStatus(value, max = 14) {
   return `${text.slice(0, max - 1)}…`;
 }
 
+function statusRow(dotClass, text, title) {
+  const wrap = document.createElement("span");
+  wrap.className = "status-row";
+  if (title) wrap.title = title;
+  const dot = document.createElement("span");
+  dot.className = `status-dot${dotClass ? ` ${dotClass}` : ""}`;
+  const label = document.createElement("span");
+  label.className = "status-row-text";
+  label.textContent = text;
+  wrap.append(dot, label);
+  return wrap;
+}
+
 function renderHeaderStatus(config) {
   const el = $("headerStatus");
   if (!el) return;
   const cloudOn = Boolean(config.cloud_enabled);
   const poolSize = cloudOn ? cloudPoolSize(config) : 0;
   const model = config.ollama_model || "unset";
-  const localDot = document.createElement("span");
-  localDot.className = "status-dot";
-  const localText = document.createElement("span");
-  localText.textContent = truncateStatus(model, 22);
-  localText.title = `Local: ${model}`;
-  const sep1 = document.createElement("span");
-  sep1.className = "status-sep";
-  sep1.textContent = "·";
-  const cloudDot = document.createElement("span");
-  cloudDot.className = `status-dot${cloudOn ? " cloud" : " off"}`;
-  const cloudText = document.createElement("span");
-  cloudText.textContent = cloudOn ? `${poolSize} cloud` : "cloud off";
-  cloudText.title = cloudOn ? `${poolSize} cloud model${poolSize === 1 ? "" : "s"}` : "Cloud fallback disabled";
-  const sep2 = document.createElement("span");
-  sep2.className = "status-sep";
-  sep2.textContent = "·";
-  const privacyText = document.createElement("span");
-  privacyText.textContent = config.privacy_mode || "balanced";
-  privacyText.title = `Privacy: ${config.privacy_mode || "balanced"}`;
-  el.replaceChildren(localDot, localText, sep1, cloudDot, cloudText, sep2, privacyText);
+  el.replaceChildren(
+    statusRow(
+      "",
+      truncateStatus(model, 26),
+      isOllamaCloudModel(model)
+        ? "Ollama Cloud model — runs on Ollama's servers, not this machine"
+        : `Local model: ${model}`,
+    ),
+    statusRow(
+      cloudOn ? "cloud" : "off",
+      cloudOn ? `${poolSize} cloud model${poolSize === 1 ? "" : "s"}` : "cloud off",
+      cloudOn ? "Cloud fallback enabled" : "Cloud fallback disabled",
+    ),
+    statusRow("privacy", `${config.privacy_mode || "balanced"} privacy`, "Privacy mode"),
+  );
 }
 
 function collectConfig() {
@@ -391,13 +483,31 @@ function openDrawer(name) {
   const toolBtn = document.querySelector(`.tool-btn[data-view="${name}"]`);
   if (toolBtn) toolBtn.classList.remove("notify");
   if (name === "trace" && lastTraceData) paintTrace(lastTraceData);
-  if (name === "history") loadHistoryList().catch((err) => toast(err.message, "error"));
 }
 
 function closeDrawers() {
   document.querySelectorAll(".drawer").forEach((d) => d.classList.remove("open"));
+  document.querySelector(".app")?.classList.remove("sidebar-open");
   $("scrim").classList.remove("show");
   document.querySelectorAll(".tool-btn[data-view]").forEach((b) => b.classList.remove("active"));
+}
+
+function toggleSidebar() {
+  const app = document.querySelector(".app");
+  if (!app) return;
+  const open = app.classList.toggle("sidebar-open");
+  $("scrim").classList.toggle("show", open);
+}
+
+// Desktop rail collapse; remembered across sessions.
+function setSidebarCollapsed(collapsed) {
+  document.querySelector(".app")?.classList.toggle("sidebar-collapsed", collapsed);
+  localStorage.setItem("relay.sidebarCollapsed", collapsed ? "1" : "");
+  const btn = $("sidebarCollapse");
+  if (btn) {
+    btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    btn.setAttribute("aria-label", btn.title);
+  }
 }
 
 function toggleDrawer(name) {
@@ -416,7 +526,13 @@ async function saveSetup() {
   try {
     const data = await api("/api/config", { method: "POST", body: JSON.stringify(collectConfig()) });
     applyConfig(data.config);
-    toast("Setup saved. Future chats will use this configuration.", "good");
+    if (isOllamaCloudModel(data.config.ollama_model)) {
+      toast(
+        "Saved — but heads up: your local model has the -cloud tag, so it runs on ollama.com, not this machine.",
+      );
+    } else {
+      toast("Setup saved. Future chats will use this configuration.", "good");
+    }
   } catch (err) {
     setPill("saveState", "error", "bad");
     toast(err.message, "error");
@@ -506,14 +622,27 @@ function appendMessage(role, text, { markdown = false, attachments = null, track
       p.textContent = text;
       bubble.appendChild(p);
     }
-    if (role === "user") article.append(bubble);
-    else article.append(makeAvatar(role), bubble);
+    if (role === "user") {
+      article.append(bubble);
+      if (text) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "msg-edit";
+        edit.dataset.editMsg = "";
+        edit.dataset.prompt = text;
+        edit.title = "Edit and resend";
+        edit.setAttribute("aria-label", "Edit and resend");
+        edit.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+        article.append(edit);
+      }
+    } else article.append(makeAvatar(role), bubble);
   }
   log.appendChild(article);
   if (trackHistory && text && (role === "user" || role === "assistant")) {
     chatHistory.push({ role, content: text });
   }
   scrollChat();
+  return article;
 }
 
 async function ensureSession() {
@@ -526,11 +655,13 @@ async function ensureSession() {
 // Pass an explicit sessionId to pin the write to a specific chat. Without it the
 // global currentSessionId is used, which can change if the user opens another
 // chat mid-stream — so a finished answer must always pin to the session it began in.
-async function persistMessage(role, content, trace = null, sessionId = null) {
+async function persistMessage(role, content, trace = null, sessionId = null, attachments = null) {
   const targetId = sessionId || (await ensureSession());
+  const body = { role, content, trace };
+  if (attachments?.length) body.attachments = attachments;
   await api(`/api/history/${targetId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ role, content, trace }),
+    body: JSON.stringify(body),
   });
   return targetId;
 }
@@ -539,30 +670,169 @@ async function loadHistoryList() {
   const data = await api("/api/history");
   const list = $("historyList");
   const path = $("historyPath");
-  if (path) path.textContent = data.history_path ? `Saved to ${data.history_path}` : "";
+  if (path) {
+    if (data.history_path) {
+      // Full paths are noisy in the sidebar; show the filename, keep the rest in the tooltip.
+      path.textContent = `Saved to ${String(data.history_path).split("/").pop()}`;
+      path.title = data.history_path;
+    } else {
+      path.textContent = "";
+      path.removeAttribute("title");
+    }
+  }
+  lastSessions = data.sessions || [];
+  renderHistoryItems();
+}
+
+let lastSessions = [];
+
+function renderHistoryItems() {
+  const list = $("historyList");
+  if (!list) return;
+  const query = ($("historySearch")?.value || "").trim().toLowerCase();
+  const sessions = query
+    ? lastSessions.filter((session) => (session.title || "").toLowerCase().includes(query))
+    : lastSessions;
   list.innerHTML = "";
-  const sessions = data.sessions || [];
   if (!sessions.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "No saved chats yet. Start a conversation to create one.";
+    empty.textContent = query
+      ? "No chats match your search."
+      : "No saved chats yet. Start a conversation to create one.";
     list.appendChild(empty);
     return;
   }
   for (const session of sessions) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = `history-item${session.id === currentSessionId ? " active" : ""}`;
-    const title = document.createElement("span");
-    title.className = "history-title";
-    title.textContent = session.title || "Untitled chat";
-    const meta = document.createElement("span");
-    meta.className = "history-meta";
-    meta.textContent = `${session.message_count || 0} msgs`;
-    btn.append(title, meta);
-    btn.addEventListener("click", () => openHistorySession(session.id));
-    list.appendChild(btn);
+    list.appendChild(buildHistoryItem(session));
   }
+}
+
+function buildHistoryItem(session) {
+  const name = session.title || "Untitled chat";
+  const item = document.createElement("div");
+  item.className = `history-item${session.id === currentSessionId ? " active" : ""}`;
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "history-open";
+  open.title = name;
+  const title = document.createElement("span");
+  title.className = "history-title";
+  title.textContent = name;
+  const meta = document.createElement("span");
+  meta.className = "history-meta";
+  meta.textContent = `${session.message_count || 0} msgs`;
+  open.append(title, meta);
+  open.addEventListener("click", () => openHistorySession(session.id).catch((err) => toast(err.message, "error")));
+
+  const rename = document.createElement("button");
+  rename.type = "button";
+  rename.className = "history-action";
+  rename.title = "Rename chat";
+  rename.setAttribute("aria-label", `Rename chat: ${name}`);
+  rename.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+  rename.addEventListener("click", (event) => {
+    event.stopPropagation();
+    startRenameSession(session, title);
+  });
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "history-action history-delete";
+  del.textContent = "×";
+  del.title = "Delete chat";
+  del.setAttribute("aria-label", `Delete chat: ${name}`);
+  del.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Two-step delete: first click arms the button, second click (within 4s) deletes.
+    if (!del.classList.contains("confirm")) {
+      del.classList.add("confirm");
+      del.textContent = "sure?";
+      del._timer = setTimeout(() => {
+        del.classList.remove("confirm");
+        del.textContent = "×";
+      }, 4000);
+      return;
+    }
+    clearTimeout(del._timer);
+    deleteHistorySession(session.id).catch((err) => toast(err.message, "error"));
+  });
+
+  item.append(open, rename, del);
+  return item;
+}
+
+// Inline rename: swap the title for an input; Enter/blur saves, Escape cancels.
+function startRenameSession(session, titleEl) {
+  const input = document.createElement("input");
+  input.className = "history-rename";
+  input.value = session.title || "";
+  input.maxLength = 120;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    input.replaceWith(titleEl);
+    if (!save || !value || value === session.title) return;
+    try {
+      await api(`/api/history/${session.id}/title`, { method: "POST", body: JSON.stringify({ title: value }) });
+      await loadHistoryList();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+// Download the current chat as a Markdown file.
+async function exportCurrentChat() {
+  if (!currentSessionId) {
+    toast("Open or start a chat first, then export.");
+    return;
+  }
+  try {
+    const data = await api(`/api/history/${currentSessionId}`);
+    const session = data.session || {};
+    const lines = [`# ${session.title || "Relay chat"}`, ""];
+    for (const message of session.messages || []) {
+      lines.push(message.role === "user" ? "## You" : "## Relay", "", message.content || "", "");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(session.title || "relay-chat").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) || "relay-chat"}.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    toast("Chat exported as Markdown.", "good");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function deleteHistorySession(sessionId) {
+  await api(`/api/history/${sessionId}`, { method: "DELETE" });
+  if (sessionId === currentSessionId) {
+    // The open chat was deleted: clear the view and start fresh.
+    await beginFreshChat({ deactivate: true });
+  } else {
+    await loadHistoryList();
+  }
+  toast("Chat deleted.", "good");
 }
 
 async function openHistorySession(sessionId) {
@@ -586,8 +856,13 @@ function renderSession(session) {
   rebuildChatHistory(messages);
   let lastTrace = null;
   for (const message of messages) {
-    if (message.role === "user") appendMessage("user", message.content || "", { trackHistory: false });
-    else if (message.role === "assistant") appendMessage("assistant", message.content || "", { markdown: true, trackHistory: false });
+    if (message.role === "user") appendMessage("user", message.content || "", { attachments: message.attachments || null, trackHistory: false });
+    else if (message.role === "assistant") {
+      const article = appendMessage("assistant", message.content || "", { markdown: true, trackHistory: false });
+      if (message.trace) {
+        addAnswerToolbar(article.querySelector(".bubble"), traceToRoutes(message.trace));
+      }
+    }
     if (message.trace) lastTrace = { trace: message.trace, routes: traceToRoutes(message.trace) };
   }
   if (lastTrace) renderTrace(lastTrace);
@@ -600,6 +875,8 @@ function traceToRoutes(trace) {
   return results.map((result) => ({
     id: result.subtask?.id,
     title: result.subtask?.title,
+    prompt: result.subtask?.prompt,
+    capabilities: result.subtask?.capabilities,
     route: result.route,
     model: result.model,
     confidence: result.confidence,
@@ -607,6 +884,7 @@ function traceToRoutes(trace) {
     error: result.error,
     duration_seconds: result.duration_seconds,
     usage: result.usage,
+    sources: result.sources,
   }));
 }
 
@@ -677,6 +955,30 @@ function buildRouteItem(route) {
   item.querySelector(".route-reason").textContent = route.error
     ? `Error: ${route.error}`
     : (route.reason || (routeName === "pending" ? "Waiting…" : ""));
+  if (route.sources?.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "route-sources";
+    for (const source of route.sources.slice(0, 6)) {
+      const link = document.createElement("a");
+      link.className = "route-source";
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      try { link.textContent = new URL(source.url).hostname.replace(/^www\./, ""); }
+      catch { link.textContent = source.title || source.url; }
+      link.title = source.title || source.url;
+      wrap.appendChild(link);
+    }
+    item.appendChild(wrap);
+  }
+  if (route.error && route.prompt) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost route-retry";
+    retry.textContent = "Retry subtask";
+    retry.addEventListener("click", () => retrySubtaskFromTrace(route).catch((err) => toast(err.message, "error")));
+    item.appendChild(retry);
+  }
   return item;
 }
 
@@ -684,9 +986,10 @@ function paintTrace(data) {
   const normalized = normalizeTraceData(data);
   const trace = normalized.trace;
   const plan = trace.plan || liveTracePlan || {};
-  $("traceSummary").textContent = plan.summary || normalized.routes.length
-    ? `${normalized.routes.length} routed subtask${normalized.routes.length === 1 ? "" : "s"}`
-    : "No plan summary returned.";
+  $("traceSummary").textContent = plan.summary
+    || (normalized.routes.length
+      ? `${normalized.routes.length} routed subtask${normalized.routes.length === 1 ? "" : "s"}`
+      : "No plan summary returned.");
   const usageBox = $("traceUsage");
   const usage = normalized.usage;
   if (usageBox) {
@@ -761,6 +1064,7 @@ function updateLiveTrace(event) {
       error: event.error,
       duration_seconds: event.duration_seconds,
       usage: event.usage,
+      sources: event.sources,
     };
     const item = $("routeList").querySelector(`[data-route-id="${event.id}"]`);
     if (item) item.replaceWith(buildRouteItem(route));
@@ -1009,7 +1313,7 @@ async function refreshPlanRoutes(planData) {
   }
   const data = await api("/api/chat/preview-routes", {
     method: "POST",
-    body: JSON.stringify({ plan, message: planData.message || "" }),
+    body: JSON.stringify({ plan, message: planData.message || "", route_mode: routeMode }),
   });
   return { ...planData, plan: data.plan, previews: data.previews };
 }
@@ -1114,10 +1418,51 @@ function finalizeStatus(ui) {
 }
 
 const EXAMPLE_PROMPTS = [
-  "Summarize the architecture of Relay, a local-first model router.",
-  "Write a Python function that parses a CSV and returns the column with the highest sum.",
-  "Research the latest cloud GPU rental prices and estimate the monthly cost at 8h/day.",
+  { route: "local", tag: "local · general", text: "Summarize the architecture of Relay, a local-first model router." },
+  { route: "cloud", tag: "cloud · coding", text: "Write a Python function that parses a CSV and returns the column with the highest sum." },
+  { route: "cloud", tag: "cloud · current info", text: "Research the latest cloud GPU rental prices and estimate the monthly cost at 8h/day." },
+  { route: "local", tag: "local · creative", text: "Draft a friendly release announcement for v0.2 of my side project." },
 ];
+
+// Ollama models tagged "-cloud" run on ollama.com's servers, not this machine.
+function isOllamaCloudModel(model) {
+  return /(-|:)cloud$/i.test(String(model || "").trim());
+}
+
+function welcomeChip(dotClass, text, title) {
+  const chip = document.createElement("span");
+  chip.className = "w-chip";
+  if (title) chip.title = title;
+  const dot = document.createElement("span");
+  dot.className = `status-dot${dotClass ? ` ${dotClass}` : ""}`;
+  const label = document.createElement("span");
+  label.textContent = text;
+  chip.append(dot, label);
+  return chip;
+}
+
+function renderWelcomeChips() {
+  const wrap = $("welcomeChips");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  if (!currentConfig) return;
+  const model = currentConfig.ollama_model || "no local model set";
+  const cloudOn = Boolean(currentConfig.cloud_enabled);
+  const pool = cloudOn ? cloudPoolSize(currentConfig) : 0;
+  const webOn = Boolean(currentConfig.web_search_enabled);
+  wrap.append(
+    welcomeChip(
+      "",
+      truncateStatus(model, 26),
+      isOllamaCloudModel(model)
+        ? "Ollama Cloud model — runs on Ollama's servers, not this machine"
+        : `Local model: ${model}`,
+    ),
+    welcomeChip(cloudOn ? "cloud" : "off", cloudOn ? `${pool} cloud model${pool === 1 ? "" : "s"}` : "cloud off"),
+    welcomeChip(webOn ? "privacy" : "off", webOn ? "web search on" : "web search off"),
+    welcomeChip("privacy", `${currentConfig.privacy_mode || "balanced"} privacy`),
+  );
+}
 
 function renderWelcome() {
   const log = chatMount();
@@ -1126,30 +1471,34 @@ function renderWelcome() {
   hero.className = "welcome";
   hero.innerHTML = `
     <div class="welcome-hero">
-      <img class="welcome-logo" src="/assets/logo.png" alt="Relay — Local &amp; Cloud Orchestration" width="460" height="110" />
-      <p class="welcome-desc">Plan on your machine, route each subtask locally or to the cloud, then synthesize one answer.</p>
-      <ol class="welcome-flow" aria-label="How Relay works">
-        <li class="flow-step"><span class="flow-num">1</span><span class="flow-label">Plan</span></li>
-        <li class="flow-arrow" aria-hidden="true"></li>
-        <li class="flow-step"><span class="flow-num">2</span><span class="flow-label">Route</span></li>
-        <li class="flow-arrow" aria-hidden="true"></li>
-        <li class="flow-step"><span class="flow-num">3</span><span class="flow-label">Execute</span></li>
-        <li class="flow-arrow" aria-hidden="true"></li>
-        <li class="flow-step"><span class="flow-num">4</span><span class="flow-label">Synthesize</span></li>
-      </ol>
+      <div class="welcome-kicker">
+        <span class="welcome-coin"><img src="/assets/logo-icon.png" alt="" /></span>
+        <span>Relay · Local &amp; Cloud Orchestration</span>
+      </div>
+      <h1 class="welcome-title">Plan <span class="w-local">local</span>.<br />Route <span class="w-cloud">smart</span>.</h1>
+      <p class="welcome-desc">Every request is planned on your machine, routed subtask-by-subtask to your local model or a cloud specialist, then synthesized into one answer.</p>
+      <div id="welcomeChips" class="welcome-chips"></div>
       <p class="welcome-examples-label">Try an example</p>
       <div class="examples"></div>
     </div>
   `;
   const examples = hero.querySelector(".examples");
-  for (const prompt of EXAMPLE_PROMPTS) {
+  for (const item of EXAMPLE_PROMPTS) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "example";
-    btn.textContent = prompt;
+    btn.className = `example ${item.route}`;
+    btn.dataset.prompt = item.text;
+    const tag = document.createElement("span");
+    tag.className = `example-tag ${item.route}`;
+    tag.textContent = item.tag;
+    const text = document.createElement("span");
+    text.className = "example-text";
+    text.textContent = item.text;
+    btn.append(tag, text);
     examples.appendChild(btn);
   }
   log.appendChild(hero);
+  renderWelcomeChips();
 }
 
 function renderTrace(data) {
@@ -1371,18 +1720,111 @@ function flashCopy(button, text) {
     .catch(() => toast("Could not copy to clipboard.", "error"));
 }
 
-// Adds a "Copy answer" toolbar under a finished assistant bubble (once).
-function addAnswerToolbar(bubble) {
-  if (!bubble || bubble.querySelector(".answer-toolbar")) return;
-  const bar = document.createElement("div");
-  bar.className = "answer-toolbar";
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.className = "answer-copy";
-  copyBtn.dataset.copyAnswer = "";
-  copyBtn.textContent = "Copy answer";
-  bar.appendChild(copyBtn);
-  bubble.appendChild(bar);
+// Adds the toolbar under a finished assistant bubble: privacy badge and
+// feedback on the left (when routing info is available), Copy on the right.
+function addAnswerToolbar(bubble, routes = null) {
+  if (!bubble) return;
+  let bar = bubble.querySelector(".answer-toolbar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "answer-toolbar";
+    const meta = document.createElement("div");
+    meta.className = "answer-meta";
+    const actions = document.createElement("div");
+    actions.className = "answer-actions";
+    const regenBtn = document.createElement("button");
+    regenBtn.type = "button";
+    regenBtn.className = "answer-copy";
+    regenBtn.dataset.regenerate = "";
+    regenBtn.textContent = "↻ Regenerate";
+    regenBtn.title = "Re-run the latest answer";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "answer-copy";
+    copyBtn.dataset.copyAnswer = "";
+    copyBtn.textContent = "Copy answer";
+    actions.append(regenBtn, copyBtn);
+    bar.append(meta, actions);
+    bubble.appendChild(bar);
+  }
+  if (routes?.length) decorateAnswerMeta(bar.querySelector(".answer-meta"), routes);
+}
+
+function decorateAnswerMeta(meta, routes) {
+  if (!meta || meta.dataset.decorated) return;
+  meta.dataset.decorated = "1";
+  const cloudCount = routes.filter((route) => route.route === "cloud").length;
+  // "Local" route through an Ollama *-cloud model still executes on ollama.com.
+  const remoteLocal = !cloudCount && routes.some((route) => isOllamaCloudModel(route.model));
+  const badge = document.createElement("span");
+  badge.className = `privacy-badge ${cloudCount ? "cloud" : remoteLocal ? "remote" : "local-only"}`;
+  badge.textContent = cloudCount
+    ? `${cloudCount} of ${routes.length} subtask${routes.length === 1 ? "" : "s"} via cloud`
+    : remoteLocal
+      ? "Via Ollama Cloud — ran on ollama.com"
+      : "Local only — never left your machine";
+  badge.title = cloudCount
+    ? "Some subtasks were sent to cloud models."
+    : remoteLocal
+      ? "Your local runtime is serving a -cloud model, which executes on Ollama's servers. Pick a model without the -cloud tag for fully on-device runs."
+      : "Every model call for this answer ran on this machine.";
+  const feedback = document.createElement("div");
+  feedback.className = "feedback";
+  feedback.dataset.routes = JSON.stringify(
+    routes.map((route) => ({ route: route.route, model: route.model || null }))
+  );
+  for (const score of [1, -1]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "feedback-btn";
+    btn.dataset.feedback = "";
+    btn.dataset.score = String(score);
+    btn.title = score === 1 ? "Good answer" : "Bad answer";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = score === 1 ? SVG_THUMB_UP : SVG_THUMB_DOWN;
+    feedback.appendChild(btn);
+  }
+  meta.append(badge, feedback);
+}
+
+async function submitFeedback(button) {
+  const group = button.closest(".feedback");
+  if (!group || group.dataset.voted) return;
+  group.dataset.voted = "1";
+  button.classList.add("selected");
+  group.querySelectorAll(".feedback-btn").forEach((btn) => { btn.disabled = true; });
+  let routes = [];
+  try { routes = JSON.parse(group.dataset.routes || "[]"); } catch { routes = []; }
+  try {
+    const data = await api("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify({ score: Number(button.dataset.score), routes }),
+    });
+    toast(`Thanks — feedback saved. ${data.note || ""}`.trim(), "good");
+  } catch (err) {
+    delete group.dataset.voted;
+    button.classList.remove("selected");
+    group.querySelectorAll(".feedback-btn").forEach((btn) => { btn.disabled = false; });
+    toast(err.message, "error");
+  }
+}
+
+// Minimal dependency-free syntax highlighting. The code is HTML-escaped first;
+// strings and comments are stashed before number/keyword passes so nothing
+// inside them gets re-wrapped. Placeholders are letter-fenced so the number
+// pass can't match their indices.
+const CODE_KEYWORDS = /\b(function|const|let|var|return|if|elif|else|for|while|class|def|import|from|export|default|async|await|try|except|catch|finally|with|as|in|of|not|and|or|None|null|undefined|True|False|true|false|lambda|pass|raise|yield|new|this|self|switch|case|break|continue|struct|fn|pub|impl|type|interface|enum|match|void|int|str|float|bool|print)\b/g;
+
+function highlightCode(code) {
+  let src = escapeHtml(code);
+  const stash = [];
+  const put = (cls, text) => `\u0000x${stash.push(`<span class="tok-${cls}">${text}</span>`) - 1}x\u0000`;
+  src = src.replace(/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, (m) => put("str", m));
+  src = src.replace(/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/g, (m) => put("com", m));
+  src = src.replace(/(^|\n)([ \t]*#[^\n]*)/g, (_m, pre, comment) => pre + put("com", comment));
+  src = src.replace(/\b(0x[\da-fA-F]+|\d+(?:\.\d+)?)\b/g, (m) => put("num", m));
+  src = src.replace(CODE_KEYWORDS, (m) => put("kw", m));
+  return src.replace(/\u0000x(\d+)x\u0000/g, (_m, i) => stash[Number(i)] ?? _m);
 }
 
 // Minimal, dependency-free, XSS-safe markdown -> HTML. All text is HTML-escaped
@@ -1402,7 +1844,7 @@ function renderMarkdown(src) {
           `<span class="md-codeblock-lang">${escapeHtml(label)}</span>` +
           `<button type="button" class="md-copy" data-copy-code>Copy</button>` +
         `</div>` +
-        `<pre class="md-code"><code>${escapeHtml(code)}</code></pre>` +
+        `<pre class="md-code"><code>${highlightCode(code)}</code></pre>` +
       `</div>`
     );
   };
@@ -1484,14 +1926,15 @@ function renderMarkdown(src) {
   return html.replace(/@@B(\d+)@@/g, (_m, i) => blocks[Number(i)]);
 }
 
-async function streamChat(message, ui, plan = null, attachments = null, history = null) {
-  const payload = { message, plan };
+async function streamChat(message, ui, plan = null, attachments = null, history = null, signal = null) {
+  const payload = { message, plan, route_mode: routeMode };
   if (attachments?.length) payload.attachments = attachments;
   if (history?.length) payload.history = history;
   const res = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
+    signal: signal || undefined,
   });
   if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
   const reader = res.body.getReader();
@@ -1539,20 +1982,29 @@ async function sendMessage() {
   const displayText = message || (sentAttachments.length ? `[${sentAttachments.length} attached file(s)]` : "");
   appendMessage("user", displayText, { attachments: sentAttachments });
   setBusy(true);
-  let ui = null;
+  activeController = new AbortController();
+  const signal = activeController.signal;
+  let sessionId = null;
+  let plan = null;
+  const runMessage = message || "Review the attached files and answer the user's request.";
   try {
-    const historyText = displayText;
     // Pin this exchange to the session it starts in, so the answer is saved here
     // even if the user opens a different chat while the response is streaming.
-    const sessionId = await persistMessage("user", historyText);
-    let plan = null;
+    const persistedAttachments = sentAttachments.map((item) => ({
+      name: item.name,
+      mime: item.mime,
+      kind: item.kind,
+      size_bytes: item.size_bytes,
+      data: item.kind === "image" ? item.data : undefined,
+    }));
+    sessionId = await persistMessage("user", displayText, null, null, persistedAttachments);
     if (currentConfig?.planner_preview_enabled !== false) {
       setPill("traceState", "planning", "warn");
       showPlanningWait();
-      const planPayload = { message: message || "Review the attached files and answer the user's request." };
+      const planPayload = { message: runMessage, route_mode: routeMode };
       if (attachments.length) planPayload.attachments = attachments;
       if (priorHistory.length) planPayload.history = priorHistory;
-      let planData = await api("/api/chat/plan", { method: "POST", body: JSON.stringify(planPayload) });
+      let planData = await api("/api/chat/plan", { method: "POST", body: JSON.stringify(planPayload), signal });
       if (!planData.models) {
         planData.models = {
           local: [currentConfig?.ollama_model].filter(Boolean),
@@ -1568,18 +2020,45 @@ async function sendMessage() {
         setPill("traceState", "cancelled", "bad");
         $("traceSummary").textContent = "Plan cancelled. No subtasks were run.";
         $("traceJson").textContent = "{}";
+        activeController = null;
+        setBusy(false);
         input.focus();
         return;
       }
-      setBusy(true);
     }
+  } catch (err) {
+    if (err?.name === "AbortError") await handleStoppedRun(null, sessionId);
+    else {
+      hidePlanPreview();
+      appendMessage("assistant", `Error: ${err.message}`);
+      setPill("traceState", "error", "bad");
+      toast(err.message, "error");
+    }
+    activeController = null;
+    setBusy(false);
+    input.focus();
+    return;
+  }
+  activeController = null;
+  await streamAndFinalize(runMessage, { plan, attachments, priorHistory, sessionId });
+}
+
+// Shared driver for anything that produces an assistant answer: sendMessage,
+// regenerate, and retry-from-trace. Owns busy state, abort, persistence.
+async function streamAndFinalize(message, { plan = null, attachments = null, priorHistory = [], sessionId = null } = {}) {
+  setBusy(true);
+  activeController = new AbortController();
+  const signal = activeController.signal;
+  let ui = null;
+  try {
     ui = makeThinkingBubble();
     beginLiveTrace();
-    const runMessage = message || "Review the attached files and answer the user's request.";
-    const data = await streamChat(runMessage, ui, plan, attachments, priorHistory);
+    const data = await streamChat(message, ui, plan, attachments, priorHistory, signal);
     const answer = (data && data.answer) || "(empty response)";
     finishThinking(ui, answer);
+    chatHistory.push({ role: "assistant", content: answer });
     if (data) {
+      addAnswerToolbar(ui.bubble, data.routes?.length ? data.routes : traceToRoutes(data.trace));
       // Save the answer first, so a later UI hiccup (e.g. trace rendering) can
       // never skip persistence. Surface a failure instead of letting it vanish.
       try {
@@ -1591,15 +2070,110 @@ async function sendMessage() {
       renderTrace(data);
     }
   } catch (err) {
-    if (ui) finishThinking(ui, `Error: ${err.message}`, true);
-    else appendMessage("assistant", `Error: ${err.message}`);
-    $("traceSummary").textContent = `Error: ${err.message}`;
-    setPill("traceState", "error", "bad");
-    document.querySelector('.tool-btn[data-view="trace"]')?.classList.add("notify");
-    toast(err.message, "error");
+    if (err?.name === "AbortError") {
+      await handleStoppedRun(ui, sessionId);
+    } else {
+      if (ui) finishThinking(ui, `Error: ${err.message}`, true);
+      else appendMessage("assistant", `Error: ${err.message}`);
+      $("traceSummary").textContent = `Error: ${err.message}`;
+      setPill("traceState", "error", "bad");
+      document.querySelector('.tool-btn[data-view="trace"]')?.classList.add("notify");
+      toast(err.message, "error");
+    }
   } finally {
+    activeController = null;
     setBusy(false);
-    input.focus();
+    $("messageInput").focus();
+  }
+}
+
+// Re-run the latest user message, replacing the latest assistant answer.
+async function regenerateLast() {
+  if (busy) return;
+  if (!chatHistory.length || chatHistory[chatHistory.length - 1].role !== "assistant") {
+    toast("Nothing to regenerate yet.");
+    return;
+  }
+  let userIdx = chatHistory.length - 2;
+  while (userIdx >= 0 && chatHistory[userIdx].role !== "user") userIdx--;
+  if (userIdx < 0) {
+    toast("No user message to regenerate from.");
+    return;
+  }
+  const userText = chatHistory[userIdx].content;
+  const priorHistory = chatHistory.slice(0, userIdx).map((m) => ({ role: m.role, content: m.content }));
+  if (currentSessionId) {
+    try {
+      await api(`/api/history/${currentSessionId}/pop`, { method: "POST", body: JSON.stringify({ role: "assistant" }) });
+    } catch {
+      // History cleanup is best-effort; the regenerated answer still gets saved.
+    }
+  }
+  chatHistory.pop();
+  const assistants = chatMount().querySelectorAll(".msg.assistant");
+  assistants[assistants.length - 1]?.remove();
+  await streamAndFinalize(userText, { priorHistory, sessionId: currentSessionId });
+}
+
+// Re-run one failed subtask from the trace as its own exchange.
+async function retrySubtaskFromTrace(route) {
+  if (busy) {
+    toast("Wait for the current run to finish first.");
+    return;
+  }
+  closeDrawers();
+  const welcome = chatMount().querySelector(".welcome");
+  if (welcome) welcome.remove();
+  const priorHistory = conversationPayload();
+  appendMessage("user", route.prompt);
+  let sessionId = null;
+  try {
+    sessionId = await persistMessage("user", route.prompt);
+  } catch {
+    // Run anyway; only persistence is lost.
+  }
+  const plan = {
+    summary: `Retry subtask: ${route.title || route.id || "subtask"}`,
+    requires_online: false,
+    subtasks: [
+      {
+        id: "task_1",
+        title: route.title || "Retried subtask",
+        prompt: route.prompt,
+        preferred_route: "auto",
+        capabilities: route.capabilities?.length ? route.capabilities : ["general"],
+        depends_on: [],
+        sensitivity: "medium",
+        rationale: "Retried from the routing trace.",
+        model_override: null,
+      },
+    ],
+  };
+  await streamAndFinalize(route.prompt, { plan, priorHistory, sessionId });
+}
+
+// The user pressed Stop: keep whatever streamed in, drop the spinner, and note
+// the stop in the trace panel. The server finishes its in-flight model calls in
+// the background; nothing new is rendered from them.
+async function handleStoppedRun(ui, sessionId) {
+  hidePlanPreview();
+  const partial = ui?.answerRaw || "";
+  if (ui) {
+    if (partial) {
+      finishThinking(ui, partial);
+      chatHistory.push({ role: "assistant", content: partial });
+    } else ui.article.remove();
+  }
+  setPill("traceState", "stopped", "warn");
+  $("traceSummary").textContent = "Stopped by user.";
+  toast("Stopped.");
+  if (partial && sessionId) {
+    try {
+      await persistMessage("assistant", partial, null, sessionId);
+      await loadHistoryList();
+    } catch {
+      // The partial answer is still on screen; losing the history write is fine.
+    }
   }
 }
 
@@ -1625,15 +2199,48 @@ function wireEvents() {
   $("testCloud").addEventListener("click", () => ping("/api/test-cloud", "Cloud model"));
   $("cloud_provider").addEventListener("change", updateProviderBlocks);
   $("local_provider")?.addEventListener("change", updateLocalProviderHints);
+  $("ollama_model")?.addEventListener("input", updateLocalModelWarning);
   $("privacy_mode")?.addEventListener("change", updatePrivacyModeHelp);
   $("newChat").addEventListener("click", () => startNewChat().catch((err) => toast(err.message, "error")));
-  $("historyNew").addEventListener("click", () => startNewChat().catch((err) => toast(err.message, "error")));
-  // Delegated clicks inside the chat: example prompts and copy buttons.
+  $("historyNew")?.addEventListener("click", () => startNewChat().catch((err) => toast(err.message, "error")));
+  $("sidebarToggle")?.addEventListener("click", toggleSidebar);
+  $("sidebarCollapse")?.addEventListener("click", () => {
+    setSidebarCollapsed(!document.querySelector(".app")?.classList.contains("sidebar-collapsed"));
+  });
+  $("webToggle")?.addEventListener("click", toggleWebSearch);
+  $("exportChat")?.addEventListener("click", exportCurrentChat);
+  $("historySearch")?.addEventListener("input", renderHistoryItems);
+  // Delegated clicks inside the chat: examples, copy buttons, and feedback.
   chatMount().addEventListener("click", (event) => {
     const codeBtn = event.target.closest("[data-copy-code]");
     if (codeBtn) {
       const code = codeBtn.closest(".md-codeblock")?.querySelector("code");
       if (code) flashCopy(codeBtn, code.textContent);
+      return;
+    }
+    const feedbackBtn = event.target.closest("[data-feedback]");
+    if (feedbackBtn) {
+      submitFeedback(feedbackBtn);
+      return;
+    }
+    const regenBtn = event.target.closest("[data-regenerate]");
+    if (regenBtn) {
+      const article = regenBtn.closest(".msg.assistant");
+      const assistants = chatMount().querySelectorAll(".msg.assistant");
+      if (article !== assistants[assistants.length - 1]) {
+        toast("Only the latest answer can be regenerated.");
+        return;
+      }
+      regenerateLast().catch((err) => toast(err.message, "error"));
+      return;
+    }
+    const editBtn = event.target.closest("[data-edit-msg]");
+    if (editBtn) {
+      const input = $("messageInput");
+      input.value = editBtn.dataset.prompt || "";
+      resizeComposer();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
       return;
     }
     const answerBtn = event.target.closest("[data-copy-answer]");
@@ -1645,14 +2252,30 @@ function wireEvents() {
     const example = event.target.closest(".example");
     if (!example) return;
     const input = $("messageInput");
-    input.value = example.textContent.trim();
+    input.value = example.dataset.prompt || example.textContent.trim();
     resizeComposer();
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
   });
   $("chatForm").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (busy) {
+      stopActiveRun();
+      return;
+    }
     sendMessage();
+  });
+  document.querySelectorAll(".route-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => applyRouteMode(btn.dataset.mode));
+  });
+  $("testSearch")?.addEventListener("click", async () => {
+    try {
+      const data = await api("/api/test-search", { method: "POST", body: JSON.stringify(collectConfig()) });
+      const sample = data.sample ? ` — “${data.sample}”` : "";
+      toast(`Search ok in ${data.latency_seconds}s: ${data.results} result(s)${sample}`, "good");
+    } catch (err) {
+      toast(err.message, "error");
+    }
   });
   $("attachButton")?.addEventListener("click", () => $("fileInput")?.click());
   $("fileInput")?.addEventListener("change", (event) => {
@@ -1674,6 +2297,8 @@ function wireEvents() {
 
 async function bootstrap() {
   wireEvents();
+  applyRouteMode(routeMode);
+  setSidebarCollapsed(localStorage.getItem("relay.sidebarCollapsed") === "1");
   resizeComposer();
   await loadConfig().catch((err) => toast(err.message, "error"));
   // Always open the main chat surface on load. Past conversations stay in the

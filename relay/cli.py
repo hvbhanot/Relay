@@ -3,13 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
 from .chat_history import DEFAULT_HISTORY_PATH
-from .openai_api import completion_dict, parse_chat_completion_request, stream_chunks, stream_finish, stream_start, stream_token
 from .providers import ProviderError
-from .ui_config import DEFAULT_UI_CONFIG_PATH, config_from_sources
+from .ui_config import DEFAULT_UI_CONFIG_PATH
 from .webui import WebUIApp, main as serve_main
 
 

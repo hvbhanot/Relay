@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -188,10 +187,6 @@ def has_images(attachments: list[Attachment]) -> bool:
 
 def image_payloads(attachments: list[Attachment]) -> list[str]:
     return [f"data:{item.mime};base64,{item.data}" for item in attachments if item.kind == "image"]
-
-
-def ollama_images(attachments: list[Attachment]) -> list[str]:
-    return [item.data for item in attachments if item.kind == "image"]
 
 
 def attachments_summary(attachments: list[Attachment]) -> str:

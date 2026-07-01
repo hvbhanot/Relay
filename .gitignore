@@ -10,6 +10,7 @@ dist/
 .env
 relay.ui.json
 relay.history.json
+relay.feedback.json
 modelrouter.ui.json
 .venv/
 venv/
